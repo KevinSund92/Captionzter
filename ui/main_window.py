@@ -1015,11 +1015,26 @@ class MainWindow(QMainWindow):
                 background: #21252e;
                 border: 1px solid #2e3340;
                 border-radius: 6px;
-                padding: 4px 4px 4px 8px;
+                padding: 4px 22px 4px 8px;
                 color: #c8cdd8;
                 min-height: 26px;
             }
-            QSpinBox:hover { border-color:#3d4457; }
+            QSpinBox:hover                { border-color:#3d4457; }
+            QSpinBox::up-button           { subcontrol-origin:border;
+                                            subcontrol-position:top right;
+                                            width:20px; background:#282d38;
+                                            border-left:1px solid #2e3340;
+                                            border-top-right-radius:5px; }
+            QSpinBox::up-button:hover     { background:#343a4a; }
+            QSpinBox::up-button:pressed   { background:#1a1d25; }
+            QSpinBox::down-button         { subcontrol-origin:border;
+                                            subcontrol-position:bottom right;
+                                            width:20px; background:#282d38;
+                                            border-left:1px solid #2e3340;
+                                            border-top:1px solid #2e3340;
+                                            border-bottom-right-radius:5px; }
+            QSpinBox::down-button:hover   { background:#343a4a; }
+            QSpinBox::down-button:pressed { background:#1a1d25; }
 
             /* ── Inputs ───────────────────────────────────────────── */
             QLineEdit, QTextEdit {
