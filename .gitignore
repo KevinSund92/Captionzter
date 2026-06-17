@@ -43,6 +43,9 @@ models/whisper/*.pt
 models/whisper/*.bin
 ~/.cache/whisper/
 
+# Local ffmpeg alias created by whisper_manager._ensure_ffmpeg_on_path()
+bin/
+
 # Media files (videos the user loads — not project files)
 *.mp4
 *.mov

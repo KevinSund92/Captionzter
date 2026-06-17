@@ -41,6 +41,39 @@ os.environ["WHISPER_CACHE"] = str(WHISPER_CACHE_DIR)
 # Also point XDG_CACHE_HOME so openai-whisper's torch.hub.load finds it.
 os.environ["XDG_CACHE_HOME"] = str(WHISPER_CACHE_DIR)
 
+# ---------------------------------------------------------------------------
+# Ensure ffmpeg is on PATH so Whisper's load_audio() can find it.
+# imageio-ffmpeg ships a portable binary but uses a versioned name such as
+# ffmpeg-win-x86_64-v7.1.exe.  Whisper calls "ffmpeg" by name, so we create
+# a plain ffmpeg.exe alias via hard link in <app>/bin/ and add that to PATH.
+# Hard links require no admin rights and use no extra disk space on NTFS.
+# ---------------------------------------------------------------------------
+def _ensure_ffmpeg_on_path() -> None:
+    try:
+        import imageio_ffmpeg
+        src = Path(imageio_ffmpeg.get_ffmpeg_exe())
+        if not src.exists():
+            return
+
+        bin_dir = _APP_DIR / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        dest = bin_dir / "ffmpeg.exe"
+
+        if not dest.exists():
+            try:
+                os.link(src, dest)       # hard link — instant, zero extra disk space
+            except OSError:
+                import shutil
+                shutil.copy2(src, dest)  # fallback: one-time ~100 MB copy
+
+        path_parts = os.environ.get("PATH", "").split(os.pathsep)
+        if str(bin_dir) not in path_parts:
+            os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ.get("PATH", "")
+    except Exception:
+        pass  # fall through — workers emit a clear error if ffmpeg is still missing
+
+_ensure_ffmpeg_on_path()
+
 AVAILABLE_MODELS = [
     ("tiny",    "~39 MB  — fastest, lowest accuracy"),
     ("base",    "~74 MB  — fast, decent accuracy"),
@@ -220,6 +253,12 @@ class WhisperTranscriber(QObject):
 
             self.finished.emit(segments)
 
+        except FileNotFoundError:
+            self.error.emit(
+                "ffmpeg not found.\n\n"
+                "Run:  pip install imageio-ffmpeg\n\n"
+                "ffmpeg is required to decode video audio for transcription."
+            )
         except Exception as exc:
             self.error.emit(str(exc))
 
@@ -256,6 +295,12 @@ class LanguageDetector(QObject):
             _, probs = model.detect_language(mel)
             lang = max(probs, key=probs.get)
             self.detected.emit(lang)
+        except FileNotFoundError:
+            self.error.emit(
+                "ffmpeg not found.\n\n"
+                "Run:  pip install imageio-ffmpeg\n\n"
+                "ffmpeg is required to decode video audio for transcription."
+            )
         except Exception as exc:
             self.error.emit(str(exc))
 

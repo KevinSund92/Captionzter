@@ -103,6 +103,58 @@ def _ffmpeg_color(hex_color: str) -> str:
     return h if h.startswith("#") else f"#{h}"
 
 
+# ── Font resolution (bold handled via font file, not drawtext :bold flag) ────
+
+# Common Windows bold/regular font pairs: (regular_suffix, bold_suffix)
+_BOLD_STEM_SUFFIXES = [("", "bd"), ("", "b"), ("", "-Bold"), ("", "Bold")]
+
+_SYSTEM_FONTS = {
+    True: [   # bold
+        r"C:\Windows\Fonts\arialbd.ttf",
+        r"C:\Windows\Fonts\calibrib.ttf",
+        r"C:\Windows\Fonts\verdanab.ttf",
+    ],
+    False: [  # regular
+        r"C:\Windows\Fonts\arial.ttf",
+        r"C:\Windows\Fonts\calibri.ttf",
+        r"C:\Windows\Fonts\verdana.ttf",
+    ],
+}
+
+
+def _resolve_effective_font(style: CaptionStyle) -> str:
+    """
+    Return the font file path for ffmpeg drawtext.
+    Newer ffmpeg removed :bold=1, so bold is expressed by choosing a bold
+    font file.  When the user selected a custom font we try to find its bold
+    sibling; otherwise we fall back to a system bold/regular font.
+    """
+    bold = getattr(style, "bold", True)
+
+    if style.font_path and os.path.isfile(style.font_path):
+        if not bold:
+            return style.font_path
+        # Try common bold-variant filename patterns next to the chosen file.
+        root, ext = os.path.splitext(style.font_path)
+        for reg_sfx, bold_sfx in _BOLD_STEM_SUFFIXES:
+            if root.lower().endswith(reg_sfx.lower()):
+                candidate = root[: len(root) - len(reg_sfx)] + bold_sfx + ext
+                if os.path.isfile(candidate):
+                    return candidate
+        # Bold sibling not found — use the regular file (better than failing).
+        return style.font_path
+
+    # No custom font: pick a system font that matches the bold setting.
+    for path in _SYSTEM_FONTS[bold]:
+        if os.path.isfile(path):
+            return path
+    # Last resort: try the other weight rather than returning nothing.
+    for path in _SYSTEM_FONTS[not bold]:
+        if os.path.isfile(path):
+            return path
+    return ""
+
+
 # ── Font metrics via Pillow (for karaoke word positioning) ────────────────────
 
 def _make_pil_font(style: CaptionStyle, fontsize_px: int):
@@ -152,9 +204,8 @@ def _build_filtergraph(segments: List[CaptionSegment], style: CaptionStyle,
     lsp         = getattr(style, "letter_spacing", 0)   # extra px between chars
     wsp         = getattr(style, "word_spacing",   0)   # extra px between words
 
-    font_arg = ""
-    if style.font_path and os.path.isfile(style.font_path):
-        font_arg = f":fontfile='{_escape_fontpath(style.font_path)}'"
+    effective_font = _resolve_effective_font(style)
+    font_arg = f":fontfile='{_escape_fontpath(effective_font)}'" if effective_font else ""
 
     fontsize_px = max(1, round(style.font_size * 96 / 72))
 
@@ -180,7 +231,6 @@ def _build_filtergraph(segments: List[CaptionSegment], style: CaptionStyle,
     # lines than rows_visible, but its top stays at the same pixel).
     max_lines = max(1, style.rows_visible)
 
-    bold_arg      = ":bold=1" if bold else ""
     style_anim    = getattr(style, "animation", "none") or "none"
 
     def _line_width(text: str) -> float:
@@ -232,7 +282,7 @@ def _build_filtergraph(segments: List[CaptionSegment], style: CaptionStyle,
             f":fontsize={fontsize_px}:fontcolor={color}"
             f":borderw={olw}:bordercolor={ol}"
             f":x={x_expr}:y={y_expr}"
-            f"{alpha_arg}{bold_arg}{font_arg}"
+            f"{alpha_arg}{font_arg}"
             f":enable='between(t\\,{t0:.3f}\\,{t1:.3f})'"
         )
 
@@ -291,7 +341,7 @@ def _build_filtergraph(segments: List[CaptionSegment], style: CaptionStyle,
                         f":fontsize={fontsize_px}"
                         f":fontcolor={fg}:borderw={olw}:bordercolor={ol}"
                         f":x={x_expr}:y={baseline_px}-ascent:line_spacing={_LINE_SPACING}"
-                        f"{bold_arg}{font_arg}"
+                        f"{font_arg}"
                         f":enable='between(t\\,{b_start:.3f}\\,{b_end:.3f})'"
                     )
                 else:
