@@ -68,29 +68,48 @@ transparently.
 
 ## Installation & Running from Source
 
+### Windows (quickest)
+
+Double-click **`setup.bat`** — it installs PyTorch, all dependencies, and
+pre-downloads the default Whisper model in one step.  Then run:
+
+```bat
+python main.py
+```
+
+### macOS / Linux
+
 ```bash
-# 1. Clone / unzip the project
+# 1. Clone the repo
 cd caption_studio
 
-# 2. Create a virtual environment
+# 2. Create a virtual environment (recommended)
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 
-# 3. Install PyTorch (CPU — fastest to install)
+# 3. Install PyTorch (CPU build — works on all machines)
 pip install torch torchvision torchaudio \
     --index-url https://download.pytorch.org/whl/cpu
 
 # 4. Install remaining dependencies
 pip install -r requirements.txt
 
-# 5. Ensure ffmpeg is on PATH
-#    macOS:   brew install ffmpeg
-#    Ubuntu:  sudo apt install ffmpeg
-#    Windows: download from https://ffmpeg.org/download.html and add to PATH
+# 5. (Optional) Pre-download the default Whisper model so the first
+#    transcription starts immediately without a network wait:
+python -c "
+import whisper; from pathlib import Path
+cache = Path('models/whisper'); cache.mkdir(parents=True, exist_ok=True)
+whisper.load_model('small', download_root=str(cache))
+print('Model ready.')
+"
 
 # 6. Run
 python main.py
 ```
+
+> **Note:** Whisper models download automatically on first transcription if
+> you skip step 5.  The `small` model is ~244 MB.  Models are cached in
+> `models/whisper/` next to the project so they survive reinstalls.
 
 ---
 

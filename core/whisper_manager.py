@@ -128,7 +128,18 @@ class WhisperTranscriber(QObject):
     # ------------------------------------------------------------------
     def run(self) -> None:
         try:
-            import whisper
+            try:
+                import whisper
+            except ModuleNotFoundError:
+                self.error.emit(
+                    "openai-whisper is not installed.\n\n"
+                    "Run the following commands in your terminal:\n\n"
+                    "  pip install torch torchvision torchaudio "
+                    "--index-url https://download.pytorch.org/whl/cpu\n"
+                    "  pip install -r requirements.txt\n\n"
+                    "Then restart CaptionStudio."
+                )
+                return
 
             # Decide Whisper task
             same_lang = (
@@ -229,7 +240,11 @@ class LanguageDetector(QObject):
 
     def run(self) -> None:
         try:
-            import whisper
+            try:
+                import whisper
+            except ModuleNotFoundError:
+                self.error.emit("openai-whisper not installed")
+                return
 
             model = whisper.load_model("tiny", download_root=str(WHISPER_CACHE_DIR))
 
