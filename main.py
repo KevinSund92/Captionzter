@@ -19,7 +19,36 @@ os.environ["CAPTION_STUDIO_APP_DIR"] = APP_DIR
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor, QPalette
 from ui.main_window import MainWindow
+
+
+def _dark_palette() -> QPalette:
+    """
+    Set a dark QPalette so Fusion renders all native widgets (spinboxes,
+    scrollbars, checkboxes …) with dark colours without needing stylesheet
+    overrides that break Qt's internal subcontrol rendering.
+    """
+    p = QPalette()
+    p.setColor(QPalette.ColorRole.Window,          QColor(0x11, 0x13, 0x18))
+    p.setColor(QPalette.ColorRole.WindowText,      QColor(0xe2, 0xe2, 0xe2))
+    p.setColor(QPalette.ColorRole.Base,            QColor(0x21, 0x25, 0x2e))
+    p.setColor(QPalette.ColorRole.AlternateBase,   QColor(0x18, 0x1b, 0x22))
+    p.setColor(QPalette.ColorRole.ToolTipBase,     QColor(0x1e, 0x22, 0x30))
+    p.setColor(QPalette.ColorRole.ToolTipText,     QColor(0xc8, 0xcd, 0xd8))
+    p.setColor(QPalette.ColorRole.PlaceholderText, QColor(0x4a, 0x51, 0x68))
+    p.setColor(QPalette.ColorRole.Text,            QColor(0xc8, 0xcd, 0xd8))
+    p.setColor(QPalette.ColorRole.Button,          QColor(0x21, 0x25, 0x2e))
+    p.setColor(QPalette.ColorRole.ButtonText,      QColor(0xc8, 0xcd, 0xd8))
+    p.setColor(QPalette.ColorRole.BrightText,      QColor(0xff, 0xff, 0xff))
+    p.setColor(QPalette.ColorRole.Link,            QColor(0x5b, 0x9c, 0xf6))
+    p.setColor(QPalette.ColorRole.Highlight,       QColor(0x3d, 0x74, 0xc4))
+    p.setColor(QPalette.ColorRole.HighlightedText, QColor(0xff, 0xff, 0xff))
+    # Disabled state
+    p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, QColor(0x3d, 0x40, 0x50))
+    p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text,       QColor(0x3d, 0x40, 0x50))
+    p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, QColor(0x3d, 0x40, 0x50))
+    return p
 
 
 def main() -> None:
@@ -29,7 +58,8 @@ def main() -> None:
     )
 
     app = QApplication(sys.argv)
-    app.setStyle("Fusion")   # cross-platform style — renders combo arrows correctly
+    app.setStyle("Fusion")
+    app.setPalette(_dark_palette())   # dark palette → Fusion renders native widgets correctly
     app.setApplicationName("CaptionStudio")
     app.setApplicationVersion("1.0.0")
     app.setOrganizationName("CaptionStudio")
