@@ -38,7 +38,9 @@ Desktop.ini
 *.bak
 cs_filter_*.txt
 
-# Whisper model cache (large files — user downloads on first run)
+# Whisper model files (large — downloaded automatically on first run)
+models/whisper/*.pt
+models/whisper/*.bin
 ~/.cache/whisper/
 
 # Media files (videos the user loads — not project files)
