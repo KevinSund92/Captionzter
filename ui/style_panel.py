@@ -59,7 +59,7 @@ class ColorButton(QPushButton):
 
 def _label(text: str) -> QLabel:
     lbl = QLabel(text)
-    lbl.setStyleSheet("color:#aaa; font-size:11px;")
+    lbl.setStyleSheet("color:#6b7280; font-size:11px; background:transparent;")
     return lbl
 
 def _spin(lo: int, hi: int, val: int, tip: str = "") -> QSpinBox:
@@ -92,8 +92,17 @@ class StylePanel(QWidget):
     # ── Build ─────────────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
+        from PyQt6.QtWidgets import QScrollArea
+
+        # Scrollable container so the panel never gets clipped on small screens
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(scroll.Shape.NoFrame)
+
+        inner = QWidget()
+        root = QVBoxLayout(inner)
+        root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(8)
 
         root.addWidget(self._build_font_box())
@@ -104,6 +113,12 @@ class StylePanel(QWidget):
         root.addWidget(self._build_animation_box())
         root.addWidget(self._build_karaoke_box())
         root.addStretch()
+
+        scroll.setWidget(inner)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
 
     # ── Font group ────────────────────────────────────────────────────────
 
@@ -128,10 +143,10 @@ class StylePanel(QWidget):
         self._bold_btn = QPushButton("B")
         self._bold_btn.setCheckable(True)
         self._bold_btn.setChecked(True)
-        self._bold_btn.setFixedSize(28, 26)
+        self._bold_btn.setFixedSize(30, 28)
         self._bold_btn.setToolTip("Bold")
         self._bold_btn.setStyleSheet(
-            "QPushButton { font-weight:bold; font-size:13px; }"
+            "QPushButton { font-weight:bold; font-size:13px; font-family:serif; }"
         )
         self._bold_btn.toggled.connect(self._emit)
         row.addWidget(self._bold_btn)
@@ -159,9 +174,8 @@ class StylePanel(QWidget):
         sp.addStretch()
         v.addLayout(sp)
 
-        # Status line (tiny, shows resolved filename)
         self._font_status = QLabel("Using system font")
-        self._font_status.setStyleSheet("color:#777; font-size:10px;")
+        self._font_status.setStyleSheet("color:#4a5168; font-size:10px; background:transparent;")
         v.addWidget(self._font_status)
 
         return box
@@ -197,21 +211,24 @@ class StylePanel(QWidget):
 
     def _build_rows_box(self) -> QGroupBox:
         box = QGroupBox("Words & Rows")
-        wr  = QHBoxLayout(box)
-        wr.setSpacing(6)
-        wr.addWidget(_label("Words/row"))
+        g   = QGridLayout(box)
+        g.setSpacing(6)
+        g.setColumnStretch(1, 1)
+        g.setColumnStretch(3, 1)
+
+        g.addWidget(_label("Words / row"), 0, 0)
         self._wpl_spin = _spin(0, 20, 0, "Words per row (0 = unlimited)")
         self._wpl_spin.setSpecialValueText("∞")
-        self._wpl_spin.setFixedWidth(58)
+        self._wpl_spin.setMinimumWidth(64)
         self._wpl_spin.valueChanged.connect(self._emit)
-        wr.addWidget(self._wpl_spin)
-        wr.addSpacing(12)
-        wr.addWidget(_label("Rows"))
+        g.addWidget(self._wpl_spin, 0, 1)
+
+        g.addWidget(_label("Rows visible"), 0, 2)
         self._rv_spin = _spin(1, 6, 1, "Rows visible at once")
-        self._rv_spin.setFixedWidth(58)
+        self._rv_spin.setMinimumWidth(64)
         self._rv_spin.valueChanged.connect(self._emit)
-        wr.addWidget(self._rv_spin)
-        wr.addStretch()
+        g.addWidget(self._rv_spin, 0, 3)
+
         return box
 
     # ── Position group ────────────────────────────────────────────────────
@@ -237,12 +254,12 @@ class StylePanel(QWidget):
         presets = QHBoxLayout()
         presets.setSpacing(4)
         for label, tip, nx, ny in [
-            ("⬆ Top",    "Top centre",    0.5, 0.08),
-            ("⬛ Mid",    "Middle centre", 0.5, 0.50),
-            ("⬇ Bottom", "Bottom centre", 0.5, 0.88),
+            ("↑ Top",    "Top centre",    0.5, 0.08),
+            ("· Mid",    "Middle centre", 0.5, 0.50),
+            ("↓ Bottom", "Bottom centre", 0.5, 0.88),
         ]:
             btn = QPushButton(label)
-            btn.setFixedHeight(26)
+            btn.setFixedHeight(28)
             btn.setToolTip(tip)
             btn.clicked.connect(lambda _, x=nx, y=ny: self._on_preset(x, y))
             presets.addWidget(btn)
@@ -303,24 +320,25 @@ class StylePanel(QWidget):
 
     def _build_animation_box(self) -> QGroupBox:
         box = QGroupBox("Animation")
-        h   = QHBoxLayout(box)
-        h.setSpacing(4)
+        g   = QGridLayout(box)
+        g.setSpacing(4)
 
         self._anim_group = QButtonGroup(self)
         self._anim_btns  = {}
-        for lbl, val, tip in [
-            ("Standard",  "none",     "No animation"),
-            ("Pop-in",    "pop",      "Scale 0%→110%→100% on entry"),
-            ("Slide In",  "slide_in", "Slides up into position on entry"),
-            ("Shake",     "shake",    "Brief horizontal shake on entry"),
-        ]:
+        entries = [
+            ("None",     "none",     "No animation"),
+            ("Pop-in",   "pop",      "Scale 0%→110%→100% on entry"),
+            ("Slide In", "slide_in", "Slides up into position on entry"),
+            ("Shake",    "shake",    "Brief horizontal shake on entry"),
+        ]
+        for i, (lbl, val, tip) in enumerate(entries):
             btn = QPushButton(lbl)
             btn.setCheckable(True)
-            btn.setFixedHeight(28)
+            btn.setFixedHeight(30)
             btn.setToolTip(tip)
             self._anim_group.addButton(btn)
             self._anim_btns[val] = btn
-            h.addWidget(btn)
+            g.addWidget(btn, i // 2, i % 2)
         self._anim_btns["none"].setChecked(True)
         self._anim_group.buttonClicked.connect(self._on_anim_clicked)
         return box
@@ -340,8 +358,9 @@ class StylePanel(QWidget):
     def _on_all_toggled(self, checked: bool) -> None:
         if checked:
             self._all_btn.setStyleSheet(
-                "QPushButton { background:#2a5a2a; border:1px solid #5a5; color:#aea; font-weight:bold; }"
-                "QPushButton:hover { background:#336633; }"
+                "QPushButton { background:#1a4a2e; border:1px solid #2d7a4a; color:#5eba7d;"
+                " font-weight:600; border-radius:6px; padding:5px 12px; }"
+                "QPushButton:hover { background:#1f5c38; border-color:#3d9c60; }"
             )
         else:
             self._all_btn.setStyleSheet("")

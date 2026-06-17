@@ -29,21 +29,23 @@ _TOTAL_H  = _RULER_H + _TRACK_H + 16   # +16 scrollbar
 # ── Colours ───────────────────────────────────────────────────────────────────
 
 _PALETTE = [
-    QColor( 52, 110, 180),
-    QColor( 42, 140,  75),
-    QColor(140,  70, 160),
-    QColor(180, 120,  30),
-    QColor(160,  55,  55),
-    QColor( 28, 140, 150),
+    QColor( 37,  99, 195),
+    QColor( 22, 101,  52),
+    QColor(109,  40, 217),
+    QColor(180,  83,   9),
+    QColor(157,  23,  77),
+    QColor(  6,  95,  70),
+    QColor( 30,  64, 175),
+    QColor(131,  24,  67),
 ]
-_RULER_BG     = QColor(25,  25,  25)
-_TRACK_BG     = QColor(18,  18,  18)
-_RULER_TICK   = QColor(80,  80,  80)
-_RULER_TEXT   = QColor(140, 140, 140)
-_GRID_LINE    = QColor(38,  38,  38)
-_CHIP_TEXT    = QColor(230, 230, 230)
-_SEL_BORDER   = QColor(255, 205,  50)
-_PLAYHEAD_COL = QColor(255,  60,  60)
+_RULER_BG     = QColor(13,  15,  20)
+_TRACK_BG     = QColor(10,  12,  16)
+_RULER_TICK   = QColor(46,  51,  64)
+_RULER_TEXT   = QColor(75,  81, 100)
+_GRID_LINE    = QColor(22,  25,  32)
+_CHIP_TEXT    = QColor(220, 225, 235)
+_SEL_BORDER   = QColor( 93, 156, 246)
+_PLAYHEAD_COL = QColor(239,  68,  68)
 
 
 def _nice_step(approx: float) -> float:
