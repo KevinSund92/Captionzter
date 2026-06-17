@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# PyInstaller
+*.spec
+dist/
+build/
+
+# IDE / editor
+.vscode/
+.idea/
+*.suo
+*.user
+*.swp
+*~
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Temp / cache
+*.tmp
+*.log
+*.bak
+cs_filter_*.txt
+
+# Whisper model cache (large files — user downloads on first run)
+~/.cache/whisper/
+
+# Media files (videos the user loads — not project files)
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm

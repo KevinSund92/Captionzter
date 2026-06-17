@@ -1,0 +1,24 @@
+# CaptionStudio — Python dependencies
+# Install with:  pip install -r requirements.txt
+#
+# Python 3.10+ recommended.
+# PyTorch: install the CPU or GPU variant manually BEFORE running pip install:
+#   CPU:  pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+#   CUDA: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+PyQt6>=6.6.0
+PyQt6-Qt6>=6.6.0
+
+openai-whisper>=20231117
+
+moviepy>=1.0.3
+imageio>=2.33.0
+imageio-ffmpeg>=0.4.9
+
+Pillow>=10.0.0
+numpy>=1.24.0
+
+# Optional: faster export via GPU
+# torch is a whisper transitive dep; install manually for CUDA support (see above)
+
+pyinstaller>=6.0.0
