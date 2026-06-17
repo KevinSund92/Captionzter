@@ -90,36 +90,62 @@ WHISPER_LANGUAGES = [
 class WhisperTranscriber(QObject):
     """
     Worker object (moves to a QThread) that loads a Whisper model and
-    transcribes a file, emitting progress and results via Qt signals.
+    transcribes (and optionally translates) a file.
+
+    Translation strategy
+    --------------------
+    - subtitle_lang == None or same as spoken_lang  → plain transcribe
+    - subtitle_lang == "en" and spoken != "en"       → Whisper translate task
+      (Whisper has built-in high-quality English translation)
+    - any other target language                      → transcribe first, then
+      post-translate each segment with deep_translator (GoogleTranslator).
+      Requires:  pip install deep-translator
     """
 
-    progress   = pyqtSignal(str)          # status message
-    segment_ready = pyqtSignal(dict)      # one {start, end, text, words} dict
-    finished   = pyqtSignal(list)         # full list of segments
-    error      = pyqtSignal(str)
+    progress      = pyqtSignal(str)
+    segment_ready = pyqtSignal(dict)
+    finished      = pyqtSignal(list)
+    error         = pyqtSignal(str)
 
     def __init__(
         self,
-        video_path: str,
-        model_name: str = "small",
-        language: Optional[str] = None,   # None → auto-detect
+        video_path:    str,
+        model_name:    str           = "small",
+        language:      Optional[str] = None,   # spoken language; None = auto-detect
+        subtitle_lang: Optional[str] = None,   # target subtitle language; None = same as spoken
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
-        self.video_path = video_path
-        self.model_name = model_name
-        self.language   = language
-        self._cancelled = False
+        self.video_path    = video_path
+        self.model_name    = model_name
+        self.language      = language
+        self.subtitle_lang = subtitle_lang
+        self._cancelled    = False
 
     def cancel(self) -> None:
         self._cancelled = True
 
     # ------------------------------------------------------------------
-    # Main worker method — call this from a QThread
-    # ------------------------------------------------------------------
     def run(self) -> None:
         try:
-            import whisper  # local import so the app starts without whisper loaded
+            import whisper
+
+            # Decide Whisper task
+            same_lang = (
+                self.subtitle_lang is None
+                or self.subtitle_lang == self.language
+                or (self.language is None and self.subtitle_lang is None)
+            )
+            whisper_to_english = (
+                not same_lang
+                and self.subtitle_lang == "en"
+            )
+            need_post_translate = (
+                not same_lang
+                and not whisper_to_english
+            )
+
+            task = "translate" if whisper_to_english else "transcribe"
 
             self.progress.emit(f"Loading Whisper '{self.model_name}' model …")
             model = whisper.load_model(
@@ -131,25 +157,48 @@ class WhisperTranscriber(QObject):
                 return
 
             self.progress.emit("Transcribing — this may take a moment …")
-
             result = model.transcribe(
                 self.video_path,
                 language=self.language,
-                word_timestamps=True,   # needed for karaoke mode
+                task=task,
+                word_timestamps=True,
                 verbose=False,
             )
 
             if self._cancelled:
                 return
 
+            # ── Optional post-translation ──────────────────────────────
+            translator = None
+            if need_post_translate and self.subtitle_lang:
+                try:
+                    from deep_translator import GoogleTranslator
+                    src = self.language or "auto"
+                    translator = GoogleTranslator(source=src, target=self.subtitle_lang)
+                    self.progress.emit(
+                        f"Translating to '{self.subtitle_lang}' via Google Translate …"
+                    )
+                except ImportError:
+                    self.error.emit(
+                        "deep-translator is not installed.\n\n"
+                        "Run:  pip install deep-translator\n\n"
+                        "Falling back to original language."
+                    )
+
             segments = []
             for seg in result.get("segments", []):
                 if self._cancelled:
                     break
+                text = seg["text"].strip()
+                if translator:
+                    try:
+                        text = translator.translate(text) or text
+                    except Exception:
+                        pass   # keep original on error
                 item = {
                     "start": seg["start"],
                     "end":   seg["end"],
-                    "text":  seg["text"].strip(),
+                    "text":  text,
                     "words": [
                         {"word": w["word"], "start": w["start"], "end": w["end"]}
                         for w in seg.get("words", [])
@@ -164,8 +213,39 @@ class WhisperTranscriber(QObject):
             self.error.emit(str(exc))
 
 
+class LanguageDetector(QObject):
+    """
+    Lightweight worker that loads Whisper 'tiny' and calls detect_language()
+    on the first 30 s of the video.  Much faster than a full transcription.
+    Emits detected(code) with a two-letter language code, e.g. "en", "sv".
+    """
+
+    detected = pyqtSignal(str)   # language code
+    error    = pyqtSignal(str)
+
+    def __init__(self, video_path: str, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self.video_path = video_path
+
+    def run(self) -> None:
+        try:
+            import whisper
+
+            model = whisper.load_model("tiny", download_root=str(WHISPER_CACHE_DIR))
+
+            # load_audio extracts 30 s by default, then pad_or_trim to exactly 30 s
+            audio = whisper.load_audio(self.video_path)
+            audio = whisper.pad_or_trim(audio)
+            mel   = whisper.log_mel_spectrogram(audio).to(model.device)
+
+            _, probs = model.detect_language(mel)
+            lang = max(probs, key=probs.get)
+            self.detected.emit(lang)
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
 def model_is_cached(model_name: str) -> bool:
     """Return True if the named Whisper model already lives in the cache."""
-    # openai-whisper stores models as  <cache>/base.pt, small.pt, etc.
     expected = WHISPER_CACHE_DIR / f"{model_name}.pt"
     return expected.exists()

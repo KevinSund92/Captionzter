@@ -63,7 +63,8 @@ def _fmt(t: float) -> str:
 class TimelineWidget(QWidget):
 
     seekRequested        = pyqtSignal(float)
-    segmentDoubleClicked = pyqtSignal(int)
+    segmentSelected      = pyqtSignal(int)   # single click on a chip
+    segmentDoubleClicked = pyqtSignal(int)   # double click → open editor
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -257,9 +258,15 @@ class TimelineWidget(QWidget):
             t = self._x_to_time(event.position().x())
             self.seekRequested.emit(t)
             idx = self._seg_at(event.position().x(), event.position().y())
-            if idx is not None:
+            if idx is not None and idx != self._selected:
                 self._selected = idx
-                self.segmentDoubleClicked  # don't emit on single click
+                self.segmentSelected.emit(idx)
+            self.update()
+
+    def clear_selection(self) -> None:
+        """Deselect all chips (called when ALL mode is activated)."""
+        if self._selected is not None:
+            self._selected = None
             self.update()
 
     def mouseMoveEvent(self, event) -> None:

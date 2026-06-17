@@ -78,6 +78,10 @@ class StylePanel(QWidget):
     styleChanged        = pyqtSignal(object)   # CaptionStyle
     resetPositions      = pyqtSignal()
     segmentAlignChanged = pyqtSignal(str)
+    segmentAnimChanged  = pyqtSignal(str)            # animation for selected seg
+    positionPreset      = pyqtSignal(float, float)   # (nx, ny) absolute
+    positionNudge       = pyqtSignal(float, float)   # (dx, dy) relative
+    allToggled          = pyqtSignal(bool)            # True = ALL mode active
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -94,7 +98,10 @@ class StylePanel(QWidget):
 
         root.addWidget(self._build_font_box())
         root.addWidget(self._build_colour_box())
-        root.addWidget(self._build_layout_box())
+        root.addWidget(self._build_rows_box())
+        root.addWidget(self._build_position_box())
+        root.addWidget(self._build_alignment_box())
+        root.addWidget(self._build_animation_box())
         root.addWidget(self._build_karaoke_box())
         root.addStretch()
 
@@ -186,15 +193,12 @@ class StylePanel(QWidget):
 
         return box
 
-    # ── Layout group ──────────────────────────────────────────────────────
+    # ── Words & Rows group ────────────────────────────────────────────────
 
-    def _build_layout_box(self) -> QGroupBox:
-        box = QGroupBox("Layout")
-        v   = QVBoxLayout(box)
-        v.setSpacing(6)
-
-        # Words/row + Rows on one line
-        wr = QHBoxLayout()
+    def _build_rows_box(self) -> QGroupBox:
+        box = QGroupBox("Words & Rows")
+        wr  = QHBoxLayout(box)
+        wr.setSpacing(6)
         wr.addWidget(_label("Words/row"))
         self._wpl_spin = _spin(0, 20, 0, "Words per row (0 = unlimited)")
         self._wpl_spin.setSpecialValueText("∞")
@@ -208,24 +212,72 @@ class StylePanel(QWidget):
         self._rv_spin.valueChanged.connect(self._emit)
         wr.addWidget(self._rv_spin)
         wr.addStretch()
-        v.addLayout(wr)
+        return box
 
-        # "All" scope toggle — sits on its own row so it's prominent
+    # ── Position group ────────────────────────────────────────────────────
+
+    def _build_position_box(self) -> QGroupBox:
+        box = QGroupBox("Position")
+        v   = QVBoxLayout(box)
+        v.setSpacing(6)
+
+        # "All" scope toggle — connect BEFORE setChecked so the green style applies on startup
         self._all_btn = QPushButton("ALL sentences")
         self._all_btn.setCheckable(True)
-        self._all_btn.setChecked(True)   # on by default
         self._all_btn.setFixedHeight(28)
         self._all_btn.setToolTip(
             "ON → position/alignment changes affect ALL sentences\n"
             "OFF → changes affect only the selected sentence"
         )
         self._all_btn.toggled.connect(self._on_all_toggled)
+        self._all_btn.setChecked(True)   # fires _on_all_toggled → green style applied
         v.addWidget(self._all_btn)
 
-        # Alignment row
-        al = QHBoxLayout()
+        # Preset position buttons
+        presets = QHBoxLayout()
+        presets.setSpacing(4)
+        for label, tip, nx, ny in [
+            ("⬆ Top",    "Top centre",    0.5, 0.08),
+            ("⬛ Mid",    "Middle centre", 0.5, 0.50),
+            ("⬇ Bottom", "Bottom centre", 0.5, 0.88),
+        ]:
+            btn = QPushButton(label)
+            btn.setFixedHeight(26)
+            btn.setToolTip(tip)
+            btn.clicked.connect(lambda _, x=nx, y=ny: self._on_preset(x, y))
+            presets.addWidget(btn)
+        v.addLayout(presets)
+
+        # Arrow nudge buttons (move ±1 % of screen)
+        nudge_grid = QGridLayout()
+        nudge_grid.setSpacing(3)
+        for (row, col, label, tip, dx, dy) in [
+            (0, 1, "▲", "Move up",    0,     -0.01),
+            (1, 0, "◀", "Move left", -0.01,  0    ),
+            (1, 2, "▶", "Move right", 0.01,  0    ),
+            (2, 1, "▼", "Move down",  0,      0.01),
+        ]:
+            btn = QPushButton(label)
+            btn.setFixedSize(32, 28)
+            btn.setToolTip(tip)
+            btn.clicked.connect(lambda _, dx=dx, dy=dy: self._on_nudge(dx, dy))
+            nudge_grid.addWidget(btn, row, col)
+        v.addLayout(nudge_grid)
+
+        # Reset
+        reset_btn = QPushButton("↺  Reset all positions + alignment")
+        reset_btn.setToolTip("Move every sentence to centre, reset alignment to centered")
+        reset_btn.clicked.connect(self.resetPositions.emit)
+        v.addWidget(reset_btn)
+
+        return box
+
+    # ── Alignment group ───────────────────────────────────────────────────
+
+    def _build_alignment_box(self) -> QGroupBox:
+        box = QGroupBox("Alignment")
+        al  = QHBoxLayout(box)
         al.setSpacing(4)
-        al.addWidget(_label("Align"))
 
         self._align_group = QButtonGroup(self)
         self._align_btns  = {}
@@ -236,8 +288,8 @@ class StylePanel(QWidget):
         ]:
             btn = QPushButton(lbl)
             btn.setCheckable(True)
-            btn.setFixedHeight(26)
-            btn.setMinimumWidth(44)
+            btn.setFixedHeight(28)
+            btn.setMinimumWidth(52)
             btn.setToolTip(tip)
             self._align_group.addButton(btn)
             self._align_btns[val] = btn
@@ -245,14 +297,32 @@ class StylePanel(QWidget):
         self._align_btns["center"].setChecked(True)
         self._align_group.buttonClicked.connect(self._on_align_clicked)
         al.addStretch()
-        v.addLayout(al)
+        return box
 
-        # Reset button
-        reset_btn = QPushButton("↺  Reset all positions + alignment")
-        reset_btn.setToolTip("Move every sentence to centre, reset alignment to centered")
-        reset_btn.clicked.connect(self.resetPositions.emit)
-        v.addWidget(reset_btn)
+    # ── Animation group ───────────────────────────────────────────────────
 
+    def _build_animation_box(self) -> QGroupBox:
+        box = QGroupBox("Animation")
+        h   = QHBoxLayout(box)
+        h.setSpacing(4)
+
+        self._anim_group = QButtonGroup(self)
+        self._anim_btns  = {}
+        for lbl, val, tip in [
+            ("Standard",  "none",     "No animation"),
+            ("Pop-in",    "pop",      "Scale 0%→110%→100% on entry"),
+            ("Slide In",  "slide_in", "Slides up into position on entry"),
+            ("Shake",     "shake",    "Brief horizontal shake on entry"),
+        ]:
+            btn = QPushButton(lbl)
+            btn.setCheckable(True)
+            btn.setFixedHeight(28)
+            btn.setToolTip(tip)
+            self._anim_group.addButton(btn)
+            self._anim_btns[val] = btn
+            h.addWidget(btn)
+        self._anim_btns["none"].setChecked(True)
+        self._anim_group.buttonClicked.connect(self._on_anim_clicked)
         return box
 
     # ── Karaoke group ─────────────────────────────────────────────────────
@@ -268,22 +338,43 @@ class StylePanel(QWidget):
     # ── Slots ─────────────────────────────────────────────────────────────
 
     def _on_all_toggled(self, checked: bool) -> None:
-        """Visual feedback: highlight the button when active."""
         if checked:
             self._all_btn.setStyleSheet(
                 "QPushButton { background:#2a5a2a; border:1px solid #5a5; color:#aea; font-weight:bold; }"
                 "QPushButton:hover { background:#336633; }"
             )
         else:
-            self._all_btn.setStyleSheet("")   # revert to theme default
+            self._all_btn.setStyleSheet("")
+        self.allToggled.emit(checked)
+
+    def set_all_mode(self, active: bool) -> None:
+        """Programmatically activate/deactivate ALL mode without side effects."""
+        self._all_btn.setChecked(active)
+
+    def _on_preset(self, nx: float, ny: float) -> None:
+        self._style.position = (nx, ny)
+        self.positionPreset.emit(nx, ny)
+
+    def _on_nudge(self, dx: float, dy: float) -> None:
+        self.positionNudge.emit(dx, dy)
 
     def _on_align_clicked(self, _btn) -> None:
         align = self._current_align()
         if self._all_btn.isChecked():
-            # Emit via styleChanged so main_window applies it to all segments
             self._emit()
         else:
             self.segmentAlignChanged.emit(align)
+
+    def _on_anim_clicked(self, _btn) -> None:
+        anim = self._current_anim()
+        if self._all_btn.isChecked():
+            self._emit()
+        else:
+            self.segmentAnimChanged.emit(anim)
+
+    def _current_anim(self) -> str:
+        checked = self._anim_group.checkedButton()
+        return next((v for v, b in self._anim_btns.items() if b is checked), "none")
 
     def _current_align(self) -> str:
         checked = self._align_group.checkedButton()
@@ -329,6 +420,7 @@ class StylePanel(QWidget):
         self._style.bold           = self._bold_btn.isChecked()
         self._style.letter_spacing = self._letter_sp_spin.value()
         self._style.word_spacing   = self._word_sp_spin.value()
+        self._style.animation      = self._current_anim()
         self.styleChanged.emit(self._style)
 
     # ── Public ────────────────────────────────────────────────────────────

@@ -180,7 +180,8 @@ def _build_filtergraph(segments: List[CaptionSegment], style: CaptionStyle,
     # lines than rows_visible, but its top stays at the same pixel).
     max_lines = max(1, style.rows_visible)
 
-    bold_arg = ":bold=1" if bold else ""
+    bold_arg      = ":bold=1" if bold else ""
+    style_anim    = getattr(style, "animation", "none") or "none"
 
     def _line_width(text: str) -> float:
         """Measure a full line including letter/word spacing."""
@@ -195,45 +196,75 @@ def _build_filtergraph(segments: List[CaptionSegment], style: CaptionStyle,
         total = sum(_text_width(font, ch, size) + letter_sp for ch in text)
         return max(0.0, total - letter_sp)
 
-    def _emit_drawtext(text: str, color: str, x: int, baseline: int,
-                       t0: float, t1: float) -> None:
-        """Emit one drawtext filter, baseline-anchored."""
+    def _anim_x_expr(base_x: int, b_start: float, anim: str) -> str:
+        """Return an ffmpeg x-expression including any animation offset."""
+        tr = f"(t-{b_start:.3f})"          # time relative to block start
+        if anim == "shake":
+            # Decaying sine: amplitude 12px, freq 55 rad/s, decay 9/s — matches preview
+            shake = f"if(lt({tr},0.5),sin({tr}*55)*12*exp(-{tr}*9),0)"
+            return f"{base_x}+{shake}"
+        return str(base_x)
+
+    def _anim_y_expr(base_y: str, b_start: float, anim: str, total_line_h: float) -> str:
+        """Return an ffmpeg y-expression including any animation offset."""
+        tr = f"(t-{b_start:.3f})"
+        if anim == "slide_in":
+            # ease-out over 0.3 s: offset starts at total_line_h+20 and goes to 0
+            slide_px = round(total_line_h + 20)
+            offset = f"if(lt({tr},0.3),pow(1-{tr}/0.3,2)*{slide_px},0)"
+            return f"{base_y}+{offset}"
+        return base_y
+
+    def _anim_alpha_expr(b_start: float, anim: str) -> str:
+        """Return an ffmpeg alpha expression, or '1' for no animation."""
+        tr = f"(t-{b_start:.3f})"
+        if anim == "pop":
+            # Fast fade-in over 0.15 s to approximate pop; scale not possible in drawtext
+            return f"if(lt({tr},0.15),{tr}/0.15,1)"
+        return "1"
+
+    def _emit_drawtext(text: str, color: str, x_expr: str, y_expr: str,
+                       alpha_expr: str, t0: float, t1: float) -> None:
         esc = _escape_text(text)
+        alpha_arg = f":alpha='{alpha_expr}'" if alpha_expr != "1" else ""
         parts.append(
             f"drawtext=text='{esc}'"
             f":fontsize={fontsize_px}:fontcolor={color}"
             f":borderw={olw}:bordercolor={ol}"
-            f":x={x}:y={baseline}-ascent"
-            f"{bold_arg}{font_arg}"
+            f":x={x_expr}:y={y_expr}"
+            f"{alpha_arg}{bold_arg}{font_arg}"
             f":enable='between(t\\,{t0:.3f}\\,{t1:.3f})'"
         )
 
     def _emit_word(word: str, fg_color: str, hl_color,
                    x_start: int, baseline: int,
                    block_t0: float, block_t1: float,
-                   word_t0: float, word_t1: float) -> None:
-        """
-        Draw one word.  If lsp > 0, explode into per-character drawtexts so
-        letter spacing is applied exactly as in the preview.
-        hl_color=None means plain (no karaoke) mode.
-        """
+                   word_t0: float, word_t1: float,
+                   anim: str, total_h: float) -> None:
+        alpha = _anim_alpha_expr(block_t0, anim)
+
         if lsp == 0:
-            _emit_drawtext(word, fg_color, x_start, baseline, block_t0, block_t1)
+            xe  = _anim_x_expr(x_start, block_t0, anim)
+            ye  = _anim_y_expr(f"{baseline}-ascent", block_t0, anim, total_h)
+            _emit_drawtext(word, fg_color, xe, ye, alpha, block_t0, block_t1)
             if hl_color:
-                _emit_drawtext(word, hl_color, x_start, baseline, word_t0, word_t1)
+                _emit_drawtext(word, hl_color, xe, ye, "1", word_t0, word_t1)
         else:
             cx = x_start
             for ch in word:
                 ch_w = round(_text_width(pil_font, ch, fontsize_px))
-                _emit_drawtext(ch, fg_color, cx, baseline, block_t0, block_t1)
+                xe   = _anim_x_expr(cx, block_t0, anim)
+                ye   = _anim_y_expr(f"{baseline}-ascent", block_t0, anim, total_h)
+                _emit_drawtext(ch, fg_color, xe, ye, alpha, block_t0, block_t1)
                 if hl_color:
-                    _emit_drawtext(ch, hl_color, cx, baseline, word_t0, word_t1)
+                    _emit_drawtext(ch, hl_color, xe, ye, "1", word_t0, word_t1)
                 cx += ch_w + lsp
 
     parts = []
     for seg in segments:
         cx, cy = seg.position   if seg.position   else style.position
         s_align = seg.text_align if seg.text_align else getattr(style, "text_align", "center")
+        seg_anim = (seg.animation if seg.animation is not None else style_anim) or "none"
 
         fixed_block_top = round((video_h - max_lines * line_h) * cy)
 
@@ -242,11 +273,11 @@ def _build_filtergraph(segments: List[CaptionSegment], style: CaptionStyle,
 
             has_karaoke = style.karaoke and any(tl for tl in tokens_per_line)
 
+            total_block_h = len(lines) * line_h
+
             if not has_karaoke:
-                if lsp == 0 and wsp == 0:
+                if lsp == 0 and wsp == 0 and seg_anim == "none":
                     # ── Fast path: single multi-line drawtext ─────────────
-                    # Use baseline_px - ascent so vertical position matches
-                    # the per-word spaced path exactly.
                     baseline_px = fixed_block_top + round(pil_asc)
                     raw_text = r"\n".join(_escape_text(ln) for ln in lines)
                     if s_align == "left":
@@ -264,7 +295,7 @@ def _build_filtergraph(segments: List[CaptionSegment], style: CaptionStyle,
                         f":enable='between(t\\,{b_start:.3f}\\,{b_end:.3f})'"
                     )
                 else:
-                    # ── Spaced path: per-word (per-char if lsp) drawtexts ──
+                    # ── Spaced/animated path: per-word drawtexts ──────────
                     for line_idx, line_text in enumerate(lines):
                         baseline_px = fixed_block_top + round(pil_asc + line_idx * line_h)
                         lw = _line_width(line_text)
@@ -278,7 +309,8 @@ def _build_filtergraph(segments: List[CaptionSegment], style: CaptionStyle,
                         words = line_text.split(" ")
                         for w_idx, word in enumerate(words):
                             _emit_word(word, fg, None, round(x), baseline_px,
-                                       b_start, b_end, b_start, b_end)
+                                       b_start, b_end, b_start, b_end,
+                                       seg_anim, total_block_h)
                             x += _text_width_lsp(pil_font, word, fontsize_px, lsp)
                             if w_idx < len(words) - 1:
                                 x += _text_width(pil_font, " ", fontsize_px) + wsp
@@ -303,7 +335,8 @@ def _build_filtergraph(segments: List[CaptionSegment], style: CaptionStyle,
                         gap    = _text_width(pil_font, " ", fontsize_px) + wsp \
                                  if t_idx < len(line_tokens) - 1 else 0
                         _emit_word(word, fg, hl, round(x), baseline_px,
-                                   b_start, b_end, token.start, token.end)
+                                   b_start, b_end, token.start, token.end,
+                                   seg_anim, total_block_h)
                         x += word_w + gap
 
     return ",".join(parts) if parts else "null"

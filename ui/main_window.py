@@ -31,7 +31,8 @@ from core.caption_model import CaptionSegment, CaptionStyle, get_caption_blocks
 from core.safe_area_config import PLATFORMS, is_short_form_video
 from ui.safe_area_overlay import SafeAreaOverlay
 from core.whisper_manager import (
-    AVAILABLE_MODELS, WHISPER_LANGUAGES, WhisperTranscriber, model_is_cached,
+    AVAILABLE_MODELS, WHISPER_LANGUAGES, WhisperTranscriber,
+    LanguageDetector, model_is_cached,
 )
 from ui.caption_canvas import CaptionCanvas
 from ui.style_panel import StylePanel
@@ -150,9 +151,12 @@ class MainWindow(QMainWindow):
         self._style:           CaptionStyle                 = CaptionStyle()
         self._worker:          Optional[WhisperTranscriber] = None
         self._worker_thread:   Optional[QThread]            = None
+        self._detect_worker    = None
+        self._detect_thread:   Optional[QThread]            = None
         self._export_worker    = None   # strong ref to prevent GC
         self._export_thread:   Optional[QThread]            = None
-        self._active_seg_idx:  Optional[int]               = None
+        self._active_seg_idx:   Optional[int]   = None
+        self._active_block_start: Optional[float] = None
 
         self._build_menu()
         self._build_toolbar()
@@ -261,8 +265,11 @@ class MainWindow(QMainWindow):
         self._file_lbl.setStyleSheet("color:#888; font-size:11px;")
         lv.addWidget(self._file_lbl)
 
-        lang_box = QGroupBox("Spoken Language")
-        ll = QVBoxLayout(lang_box)
+        lang_box = QGroupBox("Language")
+        lg = QVBoxLayout(lang_box)
+        lg.setSpacing(4)
+
+        lg.addWidget(QLabel("Spoken in video:"))
         self._lang_combo = QComboBox()
         for display_name, code in WHISPER_LANGUAGES:
             self._lang_combo.addItem(display_name, userData=code)
@@ -270,7 +277,15 @@ class MainWindow(QMainWindow):
             (i for i, (n, _) in enumerate(WHISPER_LANGUAGES) if n == "English"), 0
         )
         self._lang_combo.setCurrentIndex(en_index)
-        ll.addWidget(self._lang_combo)
+        lg.addWidget(self._lang_combo)
+
+        lg.addWidget(QLabel("Subtitle language:"))
+        self._subtitle_lang_combo = QComboBox()
+        self._subtitle_lang_combo.addItem("Same as spoken", userData=None)
+        for display_name, code in WHISPER_LANGUAGES[1:]:   # skip Auto-detect
+            self._subtitle_lang_combo.addItem(display_name, userData=code)
+        lg.addWidget(self._subtitle_lang_combo)
+
         lv.addWidget(lang_box)
 
         model_box = QGroupBox("Whisper Model")
@@ -386,6 +401,7 @@ class MainWindow(QMainWindow):
         self._timeline.seekRequested.connect(
             lambda t: self._player.setPosition(int(t * 1000))
         )
+        self._timeline.segmentSelected.connect(self._on_timeline_segment_selected)
         self._timeline.segmentDoubleClicked.connect(self._on_segment_double_clicked_by_idx)
         cv.addWidget(self._timeline)
 
@@ -406,6 +422,10 @@ class MainWindow(QMainWindow):
         self._style_panel.styleChanged.connect(self._on_style_changed)
         self._style_panel.resetPositions.connect(self._reset_all_positions)
         self._style_panel.segmentAlignChanged.connect(self._on_segment_align_changed)
+        self._style_panel.segmentAnimChanged.connect(self._on_segment_anim_changed)
+        self._style_panel.positionPreset.connect(self._on_position_preset)
+        self._style_panel.positionNudge.connect(self._on_position_nudge)
+        self._style_panel.allToggled.connect(self._on_all_mode_toggled)
         outer.addWidget(self._style_panel)
 
         outer.setStretchFactor(0, 0)
@@ -500,6 +520,55 @@ class MainWindow(QMainWindow):
 
         self._caption_item.set_preview_text("Caption preview")
 
+        # Auto-detect spoken language in background
+        self._start_language_detection(path)
+
+    # ────────────────────────────────────────────────────────────────────────
+    # Language auto-detection
+    # ────────────────────────────────────────────────────────────────────────
+
+    def _start_language_detection(self, path: str) -> None:
+        # Cancel any previous detection still running
+        if self._detect_thread and self._detect_thread.isRunning():
+            self._detect_thread.quit()
+
+        self._status_bar.showMessage("Detecting spoken language …")
+        self._lang_combo.setEnabled(False)
+
+        worker = LanguageDetector(path)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        self._detect_worker = worker
+        self._detect_thread = thread
+
+        worker.detected.connect(self._on_language_detected)
+        worker.error.connect(self._on_language_detect_error)
+        thread.started.connect(worker.run)
+        worker.detected.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        thread.start()
+
+    @pyqtSlot(str)
+    def _on_language_detected(self, code: str) -> None:
+        self._lang_combo.setEnabled(True)
+        idx = next(
+            (i for i, (_, c) in enumerate(WHISPER_LANGUAGES) if c == code), -1
+        )
+        if idx >= 0:
+            self._lang_combo.setCurrentIndex(idx)
+            name = WHISPER_LANGUAGES[idx][0]
+            self._status_bar.showMessage(f"Detected spoken language: {name}")
+        else:
+            self._status_bar.showMessage(f"Detected language code '{code}' (not in list)")
+
+    @pyqtSlot(str)
+    def _on_language_detect_error(self, _msg: str) -> None:
+        # Detection failed silently — just re-enable the combo
+        self._lang_combo.setEnabled(True)
+        self._status_bar.showMessage(
+            f"Loaded: {Path(self._video_path).name} — could not auto-detect language"
+        )
+
     # ────────────────────────────────────────────────────────────────────────
     # Transcription
     # ────────────────────────────────────────────────────────────────────────
@@ -512,10 +581,13 @@ class MainWindow(QMainWindow):
         self._timeline.set_segments([])
         self._export_btn.setEnabled(False)
 
+        spoken_lang   = self._lang_combo.currentData()
+        subtitle_lang = self._subtitle_lang_combo.currentData()
         self._worker = WhisperTranscriber(
             video_path=self._video_path,
             model_name=self._model_combo.currentData(),
-            language=self._lang_combo.currentData(),
+            language=spoken_lang,
+            subtitle_lang=subtitle_lang,
         )
         self._worker_thread = QThread()
         self._worker.moveToThread(self._worker_thread)
@@ -680,13 +752,12 @@ class MainWindow(QMainWindow):
         pos_s = self._player.position() / 1000.0
         for seg_idx, seg in enumerate(self._segments):
             if seg.start <= pos_s < seg.end:
-                # Always apply this segment's position so dragging is never
-                # overridden by a stale style position
                 nx, ny = seg.position if seg.position else self._style.position
                 self._caption_item.set_position_override(nx, ny)
 
                 if seg_idx != self._active_seg_idx:
                     self._active_seg_idx = seg_idx
+                    self._active_block_start = None   # force block-change on next check
                     self._timeline.set_selected(seg_idx)
                     self._caption_item.set_align_override(seg.text_align)
 
@@ -695,13 +766,22 @@ class MainWindow(QMainWindow):
                 for b in blocks:
                     if b[0] <= pos_s:
                         active = b
-                _, _, lines, tokens = active
+                b_start, _, lines, tokens = active
+
+                # Re-trigger animation each time a new block becomes visible
+                if b_start != self._active_block_start:
+                    self._active_block_start = b_start
+                    anim = seg.animation if seg.animation is not None \
+                           else self._style.animation
+                    self._caption_item.set_animation(anim or "none", b_start)
+
                 self._caption_item.set_display(lines, tokens, pos_s)
                 return
 
         # No active segment
         if self._active_seg_idx is not None:
-            self._active_seg_idx = None
+            self._active_seg_idx    = None
+            self._active_block_start = None
             self._timeline.set_selected(None)
         self._caption_item.set_display([], [], pos_s)
 
@@ -713,17 +793,39 @@ class MainWindow(QMainWindow):
         self._style = style
         self._caption_item.set_style(style)
         self._timeline.set_style(style)
-        # When "ALL" scope is active, push the new alignment to every segment
         if self._style_panel.scope_is_all():
             for seg in self._segments:
                 seg.text_align = style.text_align
-            self._caption_item.set_align_override(None)  # use style default
+                seg.animation  = style.animation
+            self._caption_item.set_align_override(None)
+
+    def _on_timeline_segment_selected(self, idx: int) -> None:
+        """Single-click on a timeline chip → switch to Selected mode for that segment."""
+        self._active_seg_idx = idx
+        self._timeline.set_selected(idx)
+        # Switch panel to Selected mode without triggering allToggled→clear_selection loop
+        self._style_panel.set_all_mode(False)
+
+    def _on_all_mode_toggled(self, active: bool) -> None:
+        """ALL button toggled in the style panel."""
+        if active:
+            # Return to ALL mode — clear timeline chip selection
+            self._active_seg_idx = None
+            self._timeline.clear_selection()
+            self._timeline.set_selected(None)
 
     def _on_segment_align_changed(self, align: str) -> None:
         if self._active_seg_idx is not None and \
                 0 <= self._active_seg_idx < len(self._segments):
             self._segments[self._active_seg_idx].text_align = align
             self._caption_item.set_align_override(align)
+
+    def _on_segment_anim_changed(self, anim: str) -> None:
+        if self._active_seg_idx is not None and \
+                0 <= self._active_seg_idx < len(self._segments):
+            seg = self._segments[self._active_seg_idx]
+            seg.animation = anim
+            self._caption_item.set_animation(anim, seg.start)
 
     def _reset_all_positions(self) -> None:
         # Reset position and alignment on every segment
@@ -738,6 +840,41 @@ class MainWindow(QMainWindow):
         self._caption_item.set_position_override(0.5, 0.9)
         self._caption_item.set_align_override(None)
         self._status_bar.showMessage("All positions and alignment reset to centre.")
+
+    def _on_position_preset(self, nx: float, ny: float) -> None:
+        if self._style_panel.scope_is_all():
+            for seg in self._segments:
+                seg.position = (nx, ny)
+            self._style.position = (nx, ny)
+            self._caption_item.set_position_override(nx, ny)
+        elif self._active_seg_idx is not None and \
+                0 <= self._active_seg_idx < len(self._segments):
+            self._segments[self._active_seg_idx].position = (nx, ny)
+            self._caption_item.set_position_override(nx, ny)
+        else:
+            self._status_bar.showMessage(
+                "Select a sentence in the timeline first, or enable ALL sentences."
+            )
+
+    def _on_position_nudge(self, dx: float, dy: float) -> None:
+        if self._style_panel.scope_is_all():
+            base = self._style.position
+            nx = max(0.0, min(1.0, base[0] + dx))
+            ny = max(0.0, min(1.0, base[1] + dy))
+            self._on_canvas_position(nx, ny)
+            self._caption_item.set_position_override(nx, ny)
+        elif self._active_seg_idx is not None and \
+                0 <= self._active_seg_idx < len(self._segments):
+            seg  = self._segments[self._active_seg_idx]
+            base = seg.position if seg.position else self._style.position
+            nx = max(0.0, min(1.0, base[0] + dx))
+            ny = max(0.0, min(1.0, base[1] + dy))
+            self._on_canvas_position(nx, ny)
+            self._caption_item.set_position_override(nx, ny)
+        else:
+            self._status_bar.showMessage(
+                "Select a sentence in the timeline first, or enable ALL sentences."
+            )
 
     def _on_canvas_position(self, nx: float, ny: float) -> None:
         if self._style_panel.scope_is_all():

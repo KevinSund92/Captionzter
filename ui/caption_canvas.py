@@ -17,9 +17,10 @@ and a thin guide line through the handle makes the anchor visually clear.
 
 from __future__ import annotations
 
+import math
 from typing import List, Optional
 
-from PyQt6.QtCore import Qt, QRectF, QSizeF, pyqtSignal
+from PyQt6.QtCore import Qt, QRectF, QSizeF, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QColor, QFont, QFontDatabase, QFontMetrics,
     QPainter, QPen, QBrush,
@@ -27,6 +28,11 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import QGraphicsObject, QStyleOptionGraphicsItem, QWidget
 
 from core.caption_model import CaptionStyle, WordToken
+
+# Animation durations in seconds
+_ANIM_POP_TOTAL   = 0.30   # 0–0.15 s scale up, 0.15–0.30 s settle
+_ANIM_SLIDE_DUR   = 0.30
+_ANIM_SHAKE_DUR   = 0.50
 
 
 class CaptionCanvas(QGraphicsObject):
@@ -43,8 +49,15 @@ class CaptionCanvas(QGraphicsObject):
         self._lines:          List[str]              = []
         self._tokens:         List[List[WordToken]]  = []
         self._current_time:   float                  = 0.0
-        self._align_override: Optional[str]          = None   # per-segment override
-        self._prog_move:      bool                   = False  # suppress signal on programmatic moves
+        self._align_override: Optional[str]          = None
+        self._prog_move:      bool                   = False
+        self._anim_type:      str                    = "none"
+        self._seg_start:      float                  = 0.0
+
+        # Timer for smooth animation repaints when player is paused/slow
+        self._anim_timer = QTimer(self)
+        self._anim_timer.setInterval(16)   # ~60 fps
+        self._anim_timer.timeout.connect(self.update)
 
         self._apply_style_pos()
 
@@ -62,10 +75,21 @@ class CaptionCanvas(QGraphicsObject):
         self.update()
 
     def set_align_override(self, align: Optional[str]) -> None:
-        """Set per-segment alignment override (None = use style default)."""
         self._align_override = align
         self.prepareGeometryChange()
         self.update()
+
+    def set_animation(self, anim_type: str, seg_start: float) -> None:
+        """Set the animation type and the segment start time for elapsed calculation."""
+        self._anim_type  = anim_type or "none"
+        self._seg_start  = seg_start
+        # Start fast-repaint timer so animation plays smoothly even when paused
+        anim_dur = {"pop": _ANIM_POP_TOTAL, "slide_in": _ANIM_SLIDE_DUR,
+                    "shake": _ANIM_SHAKE_DUR}.get(self._anim_type, 0)
+        if anim_dur > 0:
+            self._anim_timer.start()
+        else:
+            self._anim_timer.stop()
 
     def set_display(
         self,
@@ -76,6 +100,12 @@ class CaptionCanvas(QGraphicsObject):
         self._lines        = lines
         self._tokens       = tokens_per_line
         self._current_time = time_s
+        # Stop animation timer once the animation window has passed
+        if self._anim_timer.isActive():
+            anim_dur = {"pop": _ANIM_POP_TOTAL, "slide_in": _ANIM_SLIDE_DUR,
+                        "shake": _ANIM_SHAKE_DUR}.get(self._anim_type, 0)
+            if time_s - self._seg_start > anim_dur:
+                self._anim_timer.stop()
         self.prepareGeometryChange()
         self.update()
 
@@ -148,6 +178,39 @@ class CaptionCanvas(QGraphicsObject):
 
         return QRectF(left, -total_h / 2 - pad - 18, rect_w, total_h + pad * 2 + 18)
 
+    def _apply_anim(self, painter: QPainter, total_h: float) -> None:
+        """Push an animation transform onto the painter for the current elapsed time."""
+        elapsed = max(0.0, self._current_time - self._seg_start)
+        anim    = self._anim_type
+
+        if anim == "pop":
+            if elapsed >= _ANIM_POP_TOTAL:
+                return
+            half = _ANIM_POP_TOTAL / 2
+            if elapsed < half:
+                s = elapsed / half * 1.1          # 0 → 1.1
+            else:
+                s = 1.1 - (elapsed - half) / half * 0.1  # 1.1 → 1.0
+            painter.translate(0, 0)
+            painter.scale(s, s)
+
+        elif anim == "slide_in":
+            if elapsed >= _ANIM_SLIDE_DUR:
+                return
+            progress = elapsed / _ANIM_SLIDE_DUR
+            # ease-out: fast start, slows down
+            ease     = 1.0 - (1.0 - progress) ** 2
+            offset_y = (1.0 - ease) * (total_h + 20)
+            painter.translate(0, offset_y)
+
+        elif anim == "shake":
+            if elapsed >= _ANIM_SHAKE_DUR:
+                return
+            # decaying sine wave
+            decay  = math.exp(-elapsed * 9)
+            offset_x = math.sin(elapsed * 55) * 12 * decay
+            painter.translate(offset_x, 0)
+
     def paint(self, painter: QPainter,
               option: QStyleOptionGraphicsItem,
               widget: Optional[QWidget] = None) -> None:
@@ -170,12 +233,15 @@ class CaptionCanvas(QGraphicsObject):
         lsp     = getattr(self._style, "letter_spacing", 0)
         wsp     = getattr(self._style, "word_spacing", 0)
 
-        # ── Alignment guide line through anchor ───────────────────────────
-        # A subtle vertical line at x=0 shows where the anchor sits.
+        # ── Alignment guide line (drawn before anim transform) ───────────
         guide_pen = QPen(QColor(100, 180, 255, 120), 1.5, Qt.PenStyle.DashLine)
         guide_pen.setDashPattern([4, 4])
         painter.setPen(guide_pen)
         painter.drawLine(0, int(-total_h / 2) - 4, 0, int(total_h / 2) + 4)
+
+        # ── Apply animation transform ─────────────────────────────────────
+        painter.save()
+        self._apply_anim(painter, total_h)
 
         # ── Text lines ────────────────────────────────────────────────────
         for line_idx, line in enumerate(self._lines):
@@ -209,8 +275,9 @@ class CaptionCanvas(QGraphicsObject):
                     gap    = fm.horizontalAdvance(" ") + wsp if w_idx < len(words) - 1 else 0
                     x += word_w + gap
 
+        painter.restore()   # end animation transform
+
         # ── Drag handle ───────────────────────────────────────────────────
-        # The handle always sits at x=0 (the anchor) above the text block.
         handle_y = -total_h / 2 - 14
         painter.setBrush(QBrush(QColor(80, 160, 255, 200)))
         painter.setPen(QPen(QColor(255, 255, 255, 220), 1.5))
