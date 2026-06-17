@@ -444,7 +444,8 @@ class MainWindow(QMainWindow):
 
         # ── RIGHT PANEL ───────────────────────────────────────────────────
         self._style_panel = StylePanel()
-        self._style_panel.setFixedWidth(280)
+        self._style_panel.setMinimumWidth(280)
+        self._style_panel.setMaximumWidth(380)
         self._style_panel.setStyleSheet("QWidget { background:#0d0f14; }")
         self._style_panel.styleChanged.connect(self._on_style_changed)
         self._style_panel.resetPositions.connect(self._reset_all_positions)
@@ -455,9 +456,10 @@ class MainWindow(QMainWindow):
         self._style_panel.allToggled.connect(self._on_all_mode_toggled)
         outer.addWidget(self._style_panel)
 
-        outer.setStretchFactor(0, 0)
-        outer.setStretchFactor(1, 1)
-        outer.setStretchFactor(2, 0)
+        outer.setStretchFactor(0, 0)   # left panel: fixed
+        outer.setStretchFactor(1, 1)   # center: takes all spare space
+        outer.setStretchFactor(2, 0)   # right panel: fixed
+        outer.setSizes([240, 9999, 300])
 
     def _build_status_bar(self) -> None:
         self._status_bar = QStatusBar(self)
