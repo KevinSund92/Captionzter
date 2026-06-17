@@ -148,6 +148,10 @@ def _build_filtergraph(segments: List[CaptionSegment], style: CaptionStyle,
     - Font size: Qt pt → ffmpeg px (× 96/72)
     - Karaoke: base line in fg + per-word overlay in highlight colour
     """
+    bold        = getattr(style, "bold", True)
+    lsp         = getattr(style, "letter_spacing", 0)   # extra px between chars
+    wsp         = getattr(style, "word_spacing",   0)   # extra px between words
+
     font_arg = ""
     if style.font_path and os.path.isfile(style.font_path):
         font_arg = f":fontfile='{_escape_fontpath(style.font_path)}'"
@@ -158,85 +162,148 @@ def _build_filtergraph(segments: List[CaptionSegment], style: CaptionStyle,
     hl  = _ffmpeg_color(style.highlight_color)
     ol  = _ffmpeg_color(style.outline_color)
     olw = style.outline_width
-    cx, cy = style.position
 
-    pil_font = _make_pil_font(style, fontsize_px) if style.karaoke else None
+    # Always need Pillow font metrics so we can pin all blocks to the same
+    # vertical anchor regardless of how many lines a given block has.
+    pil_font = _make_pil_font(style, fontsize_px)
 
-    # Get accurate line height from Pillow so word y-positions match ffmpeg's
+    _LINE_SPACING = 4   # must stay in sync with non-karaoke drawtext line_spacing
     try:
-        asc, desc = pil_font.getmetrics()
-        line_h = float(asc + desc)
+        pil_asc, pil_desc = pil_font.getmetrics()
+        line_h = float(pil_asc + pil_desc + _LINE_SPACING)
     except Exception:
-        line_h = fontsize_px * 1.2
+        pil_asc  = fontsize_px
+        line_h   = fontsize_px * 1.2 + _LINE_SPACING
+
+    # Anchor all blocks against the maximum expected row count so the caption
+    # area never shifts up/down between blocks (e.g. last block may have fewer
+    # lines than rows_visible, but its top stays at the same pixel).
+    max_lines = max(1, style.rows_visible)
+
+    bold_arg = ":bold=1" if bold else ""
+
+    def _line_width(text: str) -> float:
+        """Measure a full line including letter/word spacing."""
+        ws = text.split(" ")
+        w  = sum(_text_width_lsp(pil_font, w, fontsize_px, lsp) for w in ws)
+        sp_w = _text_width(pil_font, " ", fontsize_px) + wsp
+        return w + sp_w * max(0, len(ws) - 1)
+
+    def _text_width_lsp(font, text: str, size: int, letter_sp: int) -> float:
+        if letter_sp == 0:
+            return _text_width(font, text, size)
+        total = sum(_text_width(font, ch, size) + letter_sp for ch in text)
+        return max(0.0, total - letter_sp)
+
+    def _emit_drawtext(text: str, color: str, x: int, baseline: int,
+                       t0: float, t1: float) -> None:
+        """Emit one drawtext filter, baseline-anchored."""
+        esc = _escape_text(text)
+        parts.append(
+            f"drawtext=text='{esc}'"
+            f":fontsize={fontsize_px}:fontcolor={color}"
+            f":borderw={olw}:bordercolor={ol}"
+            f":x={x}:y={baseline}-ascent"
+            f"{bold_arg}{font_arg}"
+            f":enable='between(t\\,{t0:.3f}\\,{t1:.3f})'"
+        )
+
+    def _emit_word(word: str, fg_color: str, hl_color,
+                   x_start: int, baseline: int,
+                   block_t0: float, block_t1: float,
+                   word_t0: float, word_t1: float) -> None:
+        """
+        Draw one word.  If lsp > 0, explode into per-character drawtexts so
+        letter spacing is applied exactly as in the preview.
+        hl_color=None means plain (no karaoke) mode.
+        """
+        if lsp == 0:
+            _emit_drawtext(word, fg_color, x_start, baseline, block_t0, block_t1)
+            if hl_color:
+                _emit_drawtext(word, hl_color, x_start, baseline, word_t0, word_t1)
+        else:
+            cx = x_start
+            for ch in word:
+                ch_w = round(_text_width(pil_font, ch, fontsize_px))
+                _emit_drawtext(ch, fg_color, cx, baseline, block_t0, block_t1)
+                if hl_color:
+                    _emit_drawtext(ch, hl_color, cx, baseline, word_t0, word_t1)
+                cx += ch_w + lsp
 
     parts = []
     for seg in segments:
+        cx, cy = seg.position   if seg.position   else style.position
+        s_align = seg.text_align if seg.text_align else getattr(style, "text_align", "center")
+
+        fixed_block_top = round((video_h - max_lines * line_h) * cy)
+
         blocks = get_caption_blocks(seg, style)
         for b_start, b_end, lines, tokens_per_line in blocks:
 
             has_karaoke = style.karaoke and any(tl for tl in tokens_per_line)
-            n_lines = len(lines)
 
             if not has_karaoke:
-                # ── Plain block: single drawtext with \n-joined lines ─────
-                raw_text = r"\n".join(_escape_text(ln) for ln in lines)
-                x_expr   = "(w-text_w)/2" if abs(cx - 0.5) < 0.01 else f"(w-text_w)*{cx:.4f}"
-                y_expr   = f"(h-text_h)*{cy:.4f}"
-                parts.append(
-                    f"drawtext=text='{raw_text}'"
-                    f":fontsize={fontsize_px}"
-                    f":fontcolor={fg}:borderw={olw}:bordercolor={ol}"
-                    f":x={x_expr}:y={y_expr}:line_spacing=4"
-                    f":enable='between(t\\,{b_start:.3f}\\,{b_end:.3f})'"
-                    f"{font_arg}"
-                )
+                if lsp == 0 and wsp == 0:
+                    # ── Fast path: single multi-line drawtext ─────────────
+                    # Use baseline_px - ascent so vertical position matches
+                    # the per-word spaced path exactly.
+                    baseline_px = fixed_block_top + round(pil_asc)
+                    raw_text = r"\n".join(_escape_text(ln) for ln in lines)
+                    if s_align == "left":
+                        x_expr = f"w*{cx:.4f}"
+                    elif s_align == "right":
+                        x_expr = f"w*{cx:.4f}-text_w"
+                    else:
+                        x_expr = f"w*{cx:.4f}-text_w/2"
+                    parts.append(
+                        f"drawtext=text='{raw_text}'"
+                        f":fontsize={fontsize_px}"
+                        f":fontcolor={fg}:borderw={olw}:bordercolor={ol}"
+                        f":x={x_expr}:y={baseline_px}-ascent:line_spacing={_LINE_SPACING}"
+                        f"{bold_arg}{font_arg}"
+                        f":enable='between(t\\,{b_start:.3f}\\,{b_end:.3f})'"
+                    )
+                else:
+                    # ── Spaced path: per-word (per-char if lsp) drawtexts ──
+                    for line_idx, line_text in enumerate(lines):
+                        baseline_px = fixed_block_top + round(pil_asc + line_idx * line_h)
+                        lw = _line_width(line_text)
+                        if s_align == "left":
+                            lx = round(video_w * cx)
+                        elif s_align == "right":
+                            lx = round(video_w * cx - lw)
+                        else:
+                            lx = round(video_w * cx - lw / 2)
+                        x = float(lx)
+                        words = line_text.split(" ")
+                        for w_idx, word in enumerate(words):
+                            _emit_word(word, fg, None, round(x), baseline_px,
+                                       b_start, b_end, b_start, b_end)
+                            x += _text_width_lsp(pil_font, word, fontsize_px, lsp)
+                            if w_idx < len(words) - 1:
+                                x += _text_width(pil_font, " ", fontsize_px) + wsp
             else:
                 # ── Karaoke block ─────────────────────────────────────────
-                # Render every word as its OWN drawtext (fg, whole block).
-                # The highlight is a second drawtext at the IDENTICAL x,y
-                # for that word's time window — perfect overlap, no doubling.
-                #
-                # y mirrors ffmpeg's "(h - text_h) * cy":
-                #   block_top = (video_h - n_lines * line_h) * cy
-                #   line_y    = block_top + line_idx * line_h
-                block_top_y = (video_h - n_lines * line_h) * cy
-
                 for line_idx, (line_text, line_tokens) in enumerate(
                     zip(lines, tokens_per_line)
                 ):
-                    # Round to integer pixels — all words on this line share
-                    # the exact same row, preventing 1-px subpixel drift.
-                    line_y = round(block_top_y + line_idx * line_h)
-                    line_w = _text_width(pil_font, line_text, fontsize_px)
-                    line_x = round(video_w * cx - line_w / 2)
+                    baseline_px = fixed_block_top + round(pil_asc + line_idx * line_h)
+                    lw = _line_width(line_text)
+                    if s_align == "left":
+                        line_x = round(video_w * cx)
+                    elif s_align == "right":
+                        line_x = round(video_w * cx - lw)
+                    else:
+                        line_x = round(video_w * cx - lw / 2)
 
                     x = float(line_x)
                     for t_idx, token in enumerate(line_tokens):
                         word   = token.word.strip()
-                        word_w = _text_width(pil_font, word, fontsize_px)
-                        gap    = (_text_width(pil_font, " ", fontsize_px)
-                                  if t_idx < len(line_tokens) - 1 else 0)
-                        esc = _escape_text(word)
-                        common = (
-                            f":fontsize={fontsize_px}"
-                            f":borderw={olw}:bordercolor={ol}"
-                            f":x={round(x)}:y={line_y}"
-                            f"{font_arg}"
-                        )
-
-                        # fg base — visible for the whole block
-                        parts.append(
-                            f"drawtext=text='{esc}'"
-                            f":fontcolor={fg}{common}"
-                            f":enable='between(t\\,{b_start:.3f}\\,{b_end:.3f})'"
-                        )
-                        # hl overlay — visible only during this word's window,
-                        # drawn at exactly the same position so it covers fg
-                        parts.append(
-                            f"drawtext=text='{esc}'"
-                            f":fontcolor={hl}{common}"
-                            f":enable='between(t\\,{token.start:.3f}\\,{token.end:.3f})'"
-                        )
+                        word_w = _text_width_lsp(pil_font, word, fontsize_px, lsp)
+                        gap    = _text_width(pil_font, " ", fontsize_px) + wsp \
+                                 if t_idx < len(line_tokens) - 1 else 0
+                        _emit_word(word, fg, hl, round(x), baseline_px,
+                                   b_start, b_end, token.start, token.end)
                         x += word_w + gap
 
     return ",".join(parts) if parts else "null"

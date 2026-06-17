@@ -29,6 +29,7 @@ def main() -> None:
     )
 
     app = QApplication(sys.argv)
+    app.setStyle("Fusion")   # cross-platform style — renders combo arrows correctly
     app.setApplicationName("CaptionStudio")
     app.setApplicationVersion("1.0.0")
     app.setOrganizationName("CaptionStudio")

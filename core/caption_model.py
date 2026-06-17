@@ -26,10 +26,12 @@ class WordToken:
 
 @dataclass
 class CaptionSegment:
-    text:  str
-    start: float
-    end:   float
-    words: List[WordToken] = field(default_factory=list)
+    text:     str
+    start:    float
+    end:      float
+    words:      List[WordToken]              = field(default_factory=list)
+    position:   Optional[Tuple[float,float]] = None   # (nx, ny) override; None = use style
+    text_align: Optional[str]               = None   # "left"|"center"|"right"; None = use style
 
     @classmethod
     def from_whisper_dict(cls, d: dict) -> "CaptionSegment":
@@ -48,7 +50,11 @@ class CaptionStyle:
     karaoke:        bool          = False
     words_per_line: int           = 0                   # 0 = no limit
     rows_visible:   int           = 1                   # rows shown at once
+    text_align:     str           = "center"            # "left" | "center" | "right"
     position:       Tuple[float, float] = (0.5, 0.85)  # normalized (x, y)
+    bold:           bool          = True
+    letter_spacing: int           = 0    # extra pixels between characters
+    word_spacing:   int           = 0    # extra pixels between words
 
     def to_dict(self) -> dict:
         return self.__dict__.copy()

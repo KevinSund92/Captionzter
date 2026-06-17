@@ -22,7 +22,7 @@ from PyQt6.QtMultimediaWidgets import QGraphicsVideoItem
 from PyQt6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QFileDialog, QGraphicsScene,
     QGraphicsView, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
+    QMainWindow, QMessageBox,
     QProgressBar, QPushButton, QSizePolicy, QSlider, QSplitter,
     QStatusBar, QTextEdit, QToolBar, QVBoxLayout, QWidget,
 )
@@ -35,6 +35,7 @@ from core.whisper_manager import (
 )
 from ui.caption_canvas import CaptionCanvas
 from ui.style_panel import StylePanel
+from ui.timeline_widget import TimelineWidget
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -120,9 +121,15 @@ class SegmentEditDialog(QDialog):
             end = float(self._end_edit.text())
         except ValueError:
             end = self._seg.end
+        new_text = self._text_edit.toPlainText().strip()
+        # If the text changed, word-level timestamps are no longer valid —
+        # clear them so get_caption_blocks uses seg.text instead of stale tokens.
+        words = self._seg.words if new_text == self._seg.text else []
         return CaptionSegment(
-            text=self._text_edit.toPlainText().strip(),
-            start=start, end=end, words=self._seg.words,
+            text=new_text,
+            start=start, end=end, words=words,
+            position=self._seg.position,
+            text_align=self._seg.text_align,
         )
 
 
@@ -145,6 +152,7 @@ class MainWindow(QMainWindow):
         self._worker_thread:   Optional[QThread]            = None
         self._export_worker    = None   # strong ref to prevent GC
         self._export_thread:   Optional[QThread]            = None
+        self._active_seg_idx:  Optional[int]               = None
 
         self._build_menu()
         self._build_toolbar()
@@ -160,6 +168,9 @@ class MainWindow(QMainWindow):
 
         self._player.positionChanged.connect(self._on_player_position)
         self._player.durationChanged.connect(self._on_duration_changed)
+        self._player.positionChanged.connect(
+            lambda ms: self._timeline.set_position(ms / 1000.0)
+        )
         self._player.playbackStateChanged.connect(self._on_playback_state)
 
         self._video_item.nativeSizeChanged.connect(self._on_native_size_changed)
@@ -169,8 +180,9 @@ class MainWindow(QMainWindow):
         self._caption_timer.timeout.connect(self._sync_caption_overlay)
 
         self._apply_dark_theme()
-        # Push default style to caption item
+        # Push default style to caption item and timeline
         self._caption_item.set_style(self._style)
+        self._timeline.set_style(self._style)
 
         # Restore persisted safe-area settings
         _s = QSettings("CaptionStudio", "CaptionStudio")
@@ -271,15 +283,6 @@ class MainWindow(QMainWindow):
         ml.addWidget(self._model_combo)
         lv.addWidget(model_box)
 
-        seg_box = QGroupBox("Segments  (double-click to edit)")
-        sl = QVBoxLayout(seg_box)
-        self._seg_list = QListWidget()
-        self._seg_list.setFixedHeight(200)
-        self._seg_list.itemClicked.connect(self._on_segment_clicked)
-        self._seg_list.itemDoubleClicked.connect(self._on_segment_double_clicked)
-        sl.addWidget(self._seg_list)
-        lv.addWidget(seg_box)
-
         lv.addStretch()
         outer.addWidget(left)
 
@@ -339,9 +342,9 @@ class MainWindow(QMainWindow):
         self._platform_combo.setEnabled(False)
         self._platform_combo.setStyleSheet(
             "QComboBox { background:#2d2d2d; border:1px solid #555; border-radius:4px;"
-            " padding:2px 6px; color:#ddd; font-size:11px; }"
-            "QComboBox::drop-down { border:none; width:14px; }"
-            "QComboBox QAbstractItemView { background:#2d2d2d; color:#ddd; }"
+            " padding:2px 8px; color:#ddd; font-size:11px; }"
+            "QComboBox QAbstractItemView { background:#2d2d2d; color:#ddd;"
+            " selection-background-color:#3a6ea8; }"
         )
         for name in PLATFORMS:
             self._platform_combo.addItem(name)
@@ -378,6 +381,14 @@ class MainWindow(QMainWindow):
         tv.addWidget(self._time_lbl)
         cv.addWidget(transport)
 
+        # ── Timeline ──────────────────────────────────────────────────────
+        self._timeline = TimelineWidget()
+        self._timeline.seekRequested.connect(
+            lambda t: self._player.setPosition(int(t * 1000))
+        )
+        self._timeline.segmentDoubleClicked.connect(self._on_segment_double_clicked_by_idx)
+        cv.addWidget(self._timeline)
+
         # Export progress bar
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 100)
@@ -393,6 +404,8 @@ class MainWindow(QMainWindow):
         self._style_panel = StylePanel()
         self._style_panel.setFixedWidth(240)
         self._style_panel.styleChanged.connect(self._on_style_changed)
+        self._style_panel.resetPositions.connect(self._reset_all_positions)
+        self._style_panel.segmentAlignChanged.connect(self._on_segment_align_changed)
         outer.addWidget(self._style_panel)
 
         outer.setStretchFactor(0, 0)
@@ -482,7 +495,7 @@ class MainWindow(QMainWindow):
         self._transcribe_btn.setEnabled(True)
 
         self._segments.clear()
-        self._seg_list.clear()
+        self._timeline.set_segments([])
         self._export_btn.setEnabled(False)
 
         self._caption_item.set_preview_text("Caption preview")
@@ -496,7 +509,7 @@ class MainWindow(QMainWindow):
             return
 
         self._segments.clear()
-        self._seg_list.clear()
+        self._timeline.set_segments([])
         self._export_btn.setEnabled(False)
 
         self._worker = WhisperTranscriber(
@@ -535,20 +548,10 @@ class MainWindow(QMainWindow):
     def _on_segment_ready(self, seg_dict: dict) -> None:
         seg = CaptionSegment.from_whisper_dict(seg_dict)
         self._segments.append(seg)
-        self._add_segment_item(seg, len(self._segments) - 1)
-        self._seg_list.scrollToBottom()
-
-    def _add_segment_item(self, seg: CaptionSegment, idx: int) -> None:
-        item = QListWidgetItem(
-            f"{self._fmt_time(seg.start)} → {self._fmt_time(seg.end)}  {seg.text}"
-        )
-        item.setData(Qt.ItemDataRole.UserRole, idx)
-        self._seg_list.addItem(item)
+        self._timeline.set_segments(self._segments)
 
     def _refresh_segment_list(self) -> None:
-        self._seg_list.clear()
-        for i, seg in enumerate(self._segments):
-            self._add_segment_item(seg, i)
+        self._timeline.set_segments(self._segments)
 
     @pyqtSlot(list)
     def _on_transcription_done(self, _segments: list) -> None:
@@ -572,8 +575,7 @@ class MainWindow(QMainWindow):
     # Segment editing
     # ────────────────────────────────────────────────────────────────────────
 
-    def _on_segment_double_clicked(self, item: QListWidgetItem) -> None:
-        idx = item.data(Qt.ItemDataRole.UserRole)
+    def _on_segment_double_clicked_by_idx(self, idx: int) -> None:
         if not (0 <= idx < len(self._segments)):
             return
         dlg = SegmentEditDialog(self._segments[idx], self)
@@ -659,9 +661,13 @@ class MainWindow(QMainWindow):
         self._time_lbl.setText(
             f"{self._fmt_ms(pos_ms)} / {self._fmt_ms(duration)}"
         )
+        # Keep active segment in sync while paused (timer is stopped then)
+        if self._player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+            self._sync_caption_overlay()
 
     def _on_duration_changed(self, dur_ms: int) -> None:
         self._seek_slider.setRange(0, dur_ms)
+        self._timeline.set_duration(dur_ms / 1000.0)
 
     @pyqtSlot(QMediaPlayer.PlaybackState)
     def _on_playback_state(self, state: QMediaPlayer.PlaybackState) -> None:
@@ -672,10 +678,19 @@ class MainWindow(QMainWindow):
 
     def _sync_caption_overlay(self) -> None:
         pos_s = self._player.position() / 1000.0
-        for seg in self._segments:
+        for seg_idx, seg in enumerate(self._segments):
             if seg.start <= pos_s < seg.end:
+                # Always apply this segment's position so dragging is never
+                # overridden by a stale style position
+                nx, ny = seg.position if seg.position else self._style.position
+                self._caption_item.set_position_override(nx, ny)
+
+                if seg_idx != self._active_seg_idx:
+                    self._active_seg_idx = seg_idx
+                    self._timeline.set_selected(seg_idx)
+                    self._caption_item.set_align_override(seg.text_align)
+
                 blocks = get_caption_blocks(seg, self._style)
-                # Find the active block (last one whose start <= pos_s)
                 active = blocks[0]
                 for b in blocks:
                     if b[0] <= pos_s:
@@ -683,6 +698,11 @@ class MainWindow(QMainWindow):
                 _, _, lines, tokens = active
                 self._caption_item.set_display(lines, tokens, pos_s)
                 return
+
+        # No active segment
+        if self._active_seg_idx is not None:
+            self._active_seg_idx = None
+            self._timeline.set_selected(None)
         self._caption_item.set_display([], [], pos_s)
 
     # ────────────────────────────────────────────────────────────────────────
@@ -692,23 +712,45 @@ class MainWindow(QMainWindow):
     def _on_style_changed(self, style: CaptionStyle) -> None:
         self._style = style
         self._caption_item.set_style(style)
+        self._timeline.set_style(style)
+        # When "ALL" scope is active, push the new alignment to every segment
+        if self._style_panel.scope_is_all():
+            for seg in self._segments:
+                seg.text_align = style.text_align
+            self._caption_item.set_align_override(None)  # use style default
+
+    def _on_segment_align_changed(self, align: str) -> None:
+        if self._active_seg_idx is not None and \
+                0 <= self._active_seg_idx < len(self._segments):
+            self._segments[self._active_seg_idx].text_align = align
+            self._caption_item.set_align_override(align)
+
+    def _reset_all_positions(self) -> None:
+        # Reset position and alignment on every segment
+        for seg in self._segments:
+            seg.position   = None
+            seg.text_align = None
+        # Reset the style default to centre
+        self._style.position  = (0.5, 0.9)
+        self._style.text_align = "center"
+        self._style_panel.apply_position(0.5, 0.9)
+        self._style_panel.reset_align_to_center()
+        self._caption_item.set_position_override(0.5, 0.9)
+        self._caption_item.set_align_override(None)
+        self._status_bar.showMessage("All positions and alignment reset to centre.")
 
     def _on_canvas_position(self, nx: float, ny: float) -> None:
-        self._style_panel.apply_position(nx, ny)
-        self._style.position = (nx, ny)
-
-    # ────────────────────────────────────────────────────────────────────────
-    # Segment list
-    # ────────────────────────────────────────────────────────────────────────
-
-    def _on_segment_clicked(self, item: QListWidgetItem) -> None:
-        idx = item.data(Qt.ItemDataRole.UserRole)
-        if 0 <= idx < len(self._segments):
-            seg = self._segments[idx]
-            self._player.setPosition(int(seg.start * 1000))
-            blocks = get_caption_blocks(seg, self._style)
-            _, _, lines, tokens = blocks[0]
-            self._caption_item.set_display(lines, tokens, seg.start)
+        if self._style_panel.scope_is_all():
+            # Move every segment (and the style default) to the new position
+            for seg in self._segments:
+                seg.position = (nx, ny)
+            self._style_panel.apply_position(nx, ny)
+        elif self._active_seg_idx is not None and \
+                0 <= self._active_seg_idx < len(self._segments):
+            self._segments[self._active_seg_idx].position = (nx, ny)
+        else:
+            self._style_panel.apply_position(nx, ny)
+            self._style.position = (nx, ny)
 
     # ────────────────────────────────────────────────────────────────────────
     # Helpers
@@ -746,8 +788,9 @@ class MainWindow(QMainWindow):
             QPushButton:disabled        { color:#555; border-color:#333; }
             QComboBox                   { background:#2d2d2d; border:1px solid #555;
                                           border-radius:4px; padding:4px 8px; color:#ddd; }
-            QComboBox::drop-down        { border:none; }
-            QComboBox QAbstractItemView { background:#2d2d2d; color:#ddd; }
+            QComboBox:hover             { border-color:#777; }
+            QComboBox QAbstractItemView { background:#2d2d2d; color:#ddd;
+                                          selection-background-color:#3a6ea8; }
             QListWidget                 { background:#161616; border:1px solid #333;
                                           border-radius:4px; color:#ccc; font-size:11px; }
             QListWidget::item:selected  { background:#2a4a7f; }
