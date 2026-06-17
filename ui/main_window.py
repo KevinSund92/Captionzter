@@ -1025,12 +1025,22 @@ class MainWindow(QMainWindow):
                                           border-top-right-radius:6px; background:#282d38; }
             QSpinBox::up-button:hover   { background:#343a4a; }
             QSpinBox::up-button:pressed { background:#1a1d25; }
+            QSpinBox::up-arrow          { width:0; height:0;
+                                          border-left:4px solid transparent;
+                                          border-right:4px solid transparent;
+                                          border-bottom:5px solid #9ba3b5; }
+            QSpinBox::up-arrow:disabled { border-bottom-color:#3d4050; }
             QSpinBox::down-button       { subcontrol-origin:border; subcontrol-position:bottom right;
                                           width:20px; border-left:1px solid #2e3340;
                                           border-top:1px solid #2e3340;
                                           border-bottom-right-radius:6px; background:#282d38; }
             QSpinBox::down-button:hover   { background:#343a4a; }
             QSpinBox::down-button:pressed { background:#1a1d25; }
+            QSpinBox::down-arrow          { width:0; height:0;
+                                            border-left:4px solid transparent;
+                                            border-right:4px solid transparent;
+                                            border-top:5px solid #9ba3b5; }
+            QSpinBox::down-arrow:disabled { border-top-color:#3d4050; }
 
             /* ── Inputs ───────────────────────────────────────────── */
             QLineEdit, QTextEdit {
