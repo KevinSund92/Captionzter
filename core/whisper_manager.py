@@ -21,7 +21,10 @@ after the initial model download.
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -49,31 +52,106 @@ WHISPER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 # a plain ffmpeg.exe alias via hard link in <app>/bin/ and add that to PATH.
 # Hard links require no admin rights and use no extra disk space on NTFS.
 # ---------------------------------------------------------------------------
-def _ensure_ffmpeg_on_path() -> None:
+def _ffmpeg_setup_snippet(pkg_dir: str) -> str:
+    """Return Python code that ensures ffmpeg is on PATH inside a subprocess."""
+    return (
+        "try:\n"
+        f"    import sys; sys.path.insert(0, {pkg_dir!r})\n"
+        "    import imageio_ffmpeg, os\n"
+        "    _ff = imageio_ffmpeg.get_ffmpeg_exe()\n"
+        "    os.environ['PATH'] = os.path.dirname(_ff) + os.pathsep + os.environ.get('PATH','')\n"
+        "except Exception:\n"
+        "    pass\n"
+    )
+
+
+def _packages_dir() -> Path:
+    """Return the packages directory where pip installed whisper/torch."""
+    from core.first_run_check import packages_dir
+    return Path(packages_dir())
+
+
+def _find_worker_python() -> str:
+    """Find the Python interpreter that has whisper/torch installed."""
+    # 1. Embedded Python downloaded by the wizard
+    local = os.environ.get("LOCALAPPDATA", "")
+    if local:
+        embed = os.path.join(local, "..", "..", "Downloads", "caption_studio",
+                             "caption_studio", "python", "python.exe")
+    app_dir = os.environ.get("CAPTION_STUDIO_APP_DIR", "")
+    candidates = []
+    if app_dir:
+        candidates.append(os.path.join(app_dir, "python", "python.exe"))
+    # 2. Windows registry
     try:
-        import imageio_ffmpeg
-        src = Path(imageio_ffmpeg.get_ffmpeg_exe())
-        if not src.exists():
-            return
-
-        bin_dir = _APP_DIR / "bin"
-        bin_dir.mkdir(parents=True, exist_ok=True)
-        dest = bin_dir / "ffmpeg.exe"
-
-        if not dest.exists():
-            try:
-                os.link(src, dest)       # hard link — instant, zero extra disk space
-            except OSError:
-                import shutil
-                shutil.copy2(src, dest)  # fallback: one-time ~100 MB copy
-
-        path_parts = os.environ.get("PATH", "").split(os.pathsep)
-        if str(bin_dir) not in path_parts:
-            os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ.get("PATH", "")
+        import winreg
+        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            for root_key in (r"Software\Python\PythonCore",):
+                try:
+                    with winreg.OpenKey(hive, root_key) as core:
+                        i = 0
+                        while True:
+                            try:
+                                ver = winreg.EnumKey(core, i); i += 1
+                                try:
+                                    with winreg.OpenKey(core, rf"{ver}\InstallPath") as ip:
+                                        p, _ = winreg.QueryValueEx(ip, "ExecutablePath")
+                                        if p and os.path.isfile(p):
+                                            candidates.append(p)
+                                except OSError:
+                                    pass
+                            except OSError:
+                                break
+                except OSError:
+                    pass
     except Exception:
-        pass  # fall through — workers emit a clear error if ffmpeg is still missing
+        pass
+    # 3. LOCALAPPDATA Python installs
+    if local:
+        base = os.path.join(local, "Programs", "Python")
+        if os.path.isdir(base):
+            for sub in sorted(os.listdir(base), reverse=True):
+                p = os.path.join(base, sub, "python.exe")
+                if os.path.isfile(p):
+                    candidates.append(p)
+    # 4. PATH
+    for name in ("python3.exe", "python.exe"):
+        p = shutil.which(name)
+        if p and os.path.isfile(p) and p != sys.executable:
+            candidates.append(p)
 
-_ensure_ffmpeg_on_path()
+    pkg_dir = str(_packages_dir())
+    for p in candidates:
+        if not os.path.isfile(p):
+            continue
+        try:
+            r = subprocess.run([p, "--version"], capture_output=True, text=True, timeout=5)
+            if r.returncode == 0 and "Python 3" in (r.stdout + r.stderr):
+                # Prefer Python that can actually import whisper from our packages/
+                check = subprocess.run(
+                    [p, "-c", f"import sys; sys.path.insert(0,{pkg_dir!r}); import whisper"],
+                    capture_output=True, timeout=30,
+                )
+                if check.returncode == 0:
+                    return p
+        except Exception:
+            pass
+
+    # Fallback: return first Python 3 found even if whisper check failed
+    for p in candidates:
+        if not os.path.isfile(p):
+            continue
+        try:
+            r = subprocess.run([p, "--version"], capture_output=True, text=True, timeout=5)
+            if r.returncode == 0 and "Python 3" in (r.stdout + r.stderr):
+                return p
+        except Exception:
+            pass
+
+    raise RuntimeError(
+        "No Python interpreter found. Please restart CaptionStudio to re-run setup."
+    )
+
 
 AVAILABLE_MODELS = [
     ("tiny",    "~39 MB  — fastest, lowest accuracy"),
@@ -155,116 +233,98 @@ class WhisperTranscriber(QObject):
         self.language      = language
         self.subtitle_lang = subtitle_lang
         self._cancelled    = False
+        self._proc         = None
 
     def cancel(self) -> None:
         self._cancelled = True
+        if self._proc and self._proc.poll() is None:
+            self._proc.kill()
 
     # ------------------------------------------------------------------
     def run(self) -> None:
         try:
-            try:
-                import whisper
-            except ModuleNotFoundError:
-                # Last-ditch attempt: ensure packages/ is in sys.path
-                try:
-                    from core.first_run_check import packages_dir
-                    _pkg = packages_dir()
-                    if _pkg not in sys.path:
-                        sys.path.insert(0, _pkg)
-                    import whisper  # noqa: F811
-                except ModuleNotFoundError:
-                    self.error.emit(
-                        "openai-whisper is not installed.\n\n"
-                        "Please restart CaptionStudio — the setup wizard will\n"
-                        "run again automatically to reinstall missing components."
-                    )
-                    return
+            python = _find_worker_python()
+            pkg_dir = str(_packages_dir())
+            model_dir = str(WHISPER_CACHE_DIR)
 
-            # Decide Whisper task
             same_lang = (
                 self.subtitle_lang is None
                 or self.subtitle_lang == self.language
                 or (self.language is None and self.subtitle_lang is None)
             )
-            whisper_to_english = (
-                not same_lang
-                and self.subtitle_lang == "en"
-            )
-            need_post_translate = (
-                not same_lang
-                and not whisper_to_english
-            )
-
+            whisper_to_english = not same_lang and self.subtitle_lang == "en"
             task = "translate" if whisper_to_english else "transcribe"
+            language_arg = self.language or ""
 
             self.progress.emit(f"Loading Whisper '{self.model_name}' model …")
-            model = whisper.load_model(
-                self.model_name,
-                download_root=str(WHISPER_CACHE_DIR),
+
+            script = (
+                "import sys, json\n"
+                f"sys.path.insert(0, {pkg_dir!r})\n"
+                + _ffmpeg_setup_snippet(pkg_dir) +
+                "import whisper\n"
+                f"model = whisper.load_model({self.model_name!r}, download_root={model_dir!r})\n"
+                "sys.stderr.write('TRANSCRIBING\\n'); sys.stderr.flush()\n"
+                f"result = model.transcribe({self.video_path!r}, "
+                f"language={language_arg!r} or None, task={task!r}, "
+                "word_timestamps=True, verbose=False)\n"
+                "for seg in result.get('segments', []):\n"
+                "    print(json.dumps({"
+                "'start':seg['start'],'end':seg['end'],'text':seg['text'].strip(),"
+                "'words':[{'word':w['word'],'start':w['start'],'end':w['end']} for w in seg.get('words',[])]}), flush=True)\n"
+                "print('__DONE__', flush=True)\n"
             )
 
-            if self._cancelled:
-                return
-
-            self.progress.emit("Transcribing — this may take a moment …")
-            result = model.transcribe(
-                self.video_path,
-                language=self.language,
-                task=task,
-                word_timestamps=True,
-                verbose=False,
+            env = os.environ.copy()
+            env["PYTHONUNBUFFERED"] = "1"
+            proc = subprocess.Popen(
+                [python, "-c", script],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, env=env,
             )
+            self._proc = proc
 
-            if self._cancelled:
-                return
+            stderr_lines: list = []
 
-            # ── Optional post-translation ──────────────────────────────
-            translator = None
-            if need_post_translate and self.subtitle_lang:
-                try:
-                    from deep_translator import GoogleTranslator
-                    src = self.language or "auto"
-                    translator = GoogleTranslator(source=src, target=self.subtitle_lang)
-                    self.progress.emit(
-                        f"Translating to '{self.subtitle_lang}' via Google Translate …"
-                    )
-                except ImportError:
-                    self.error.emit(
-                        "deep-translator is not installed.\n\n"
-                        "Run:  pip install deep-translator\n\n"
-                        "Falling back to original language."
-                    )
+            def _read_stderr():
+                for line in proc.stderr:
+                    line = line.strip()
+                    if line == "TRANSCRIBING":
+                        self.progress.emit("Transcribing — this may take a moment …")
+                    else:
+                        stderr_lines.append(line)
+
+            import threading
+            t = threading.Thread(target=_read_stderr, daemon=True)
+            t.start()
 
             segments = []
-            for seg in result.get("segments", []):
+            for raw in proc.stdout:
                 if self._cancelled:
+                    proc.kill()
                     break
-                text = seg["text"].strip()
-                if translator:
-                    try:
-                        text = translator.translate(text) or text
-                    except Exception:
-                        pass   # keep original on error
-                item = {
-                    "start": seg["start"],
-                    "end":   seg["end"],
-                    "text":  text,
-                    "words": [
-                        {"word": w["word"], "start": w["start"], "end": w["end"]}
-                        for w in seg.get("words", [])
-                    ],
-                }
-                segments.append(item)
-                self.segment_ready.emit(item)
+                raw = raw.strip()
+                if raw == "__DONE__":
+                    break
+                try:
+                    item = json.loads(raw)
+                    segments.append(item)
+                    self.segment_ready.emit(item)
+                except Exception:
+                    pass
+
+            t.join()
+            proc.wait()
+            self._proc = None
+
+            if self._cancelled:
+                return
+            if proc.returncode != 0:
+                err = "\n".join(stderr_lines[-20:])
+                raise RuntimeError(f"Whisper subprocess failed:\n{err}")
 
             self.finished.emit(segments)
 
-        except FileNotFoundError:
-            self.error.emit(
-                "ffmpeg not found.\n\n"
-                "Run:  pip install imageio-ffmpeg\n\n"
-                "ffmpeg is required to decode video audio for transcription."
-            )
         except Exception as exc:
             self.error.emit(str(exc))
 
@@ -285,35 +345,36 @@ class LanguageDetector(QObject):
 
     def run(self) -> None:
         try:
-            try:
-                import whisper
-            except ModuleNotFoundError:
-                from core.first_run_check import packages_dir
-                _pkg = packages_dir()
-                if _pkg not in sys.path:
-                    sys.path.insert(0, _pkg)
-                try:
-                    import whisper  # noqa: F811
-                except ModuleNotFoundError:
-                    self.error.emit("openai-whisper not installed")
-                    return
+            python = _find_worker_python()
+            pkg_dir = str(_packages_dir())
+            model_dir = str(WHISPER_CACHE_DIR)
 
-            model = whisper.load_model("tiny", download_root=str(WHISPER_CACHE_DIR))
-
-            # load_audio extracts 30 s by default, then pad_or_trim to exactly 30 s
-            audio = whisper.load_audio(self.video_path)
-            audio = whisper.pad_or_trim(audio)
-            mel   = whisper.log_mel_spectrogram(audio).to(model.device)
-
-            _, probs = model.detect_language(mel)
-            lang = max(probs, key=probs.get)
-            self.detected.emit(lang)
-        except FileNotFoundError:
-            self.error.emit(
-                "ffmpeg not found.\n\n"
-                "Run:  pip install imageio-ffmpeg\n\n"
-                "ffmpeg is required to decode video audio for transcription."
+            script = (
+                "import sys\n"
+                f"sys.path.insert(0, {pkg_dir!r})\n"
+                + _ffmpeg_setup_snippet(pkg_dir) +
+                "import whisper\n"
+                f"model = whisper.load_model('tiny', download_root={model_dir!r})\n"
+                f"audio = whisper.load_audio({self.video_path!r})\n"
+                "audio = whisper.pad_or_trim(audio)\n"
+                "mel = whisper.log_mel_spectrogram(audio).to(model.device)\n"
+                "_, probs = model.detect_language(mel)\n"
+                "lang = max(probs, key=probs.get)\n"
+                "print(lang, flush=True)\n"
             )
+
+            env = os.environ.copy()
+            env["PYTHONUNBUFFERED"] = "1"
+            proc = subprocess.run(
+                [python, "-c", script],
+                capture_output=True, text=True, env=env,
+            )
+            if proc.returncode != 0:
+                self.error.emit(proc.stderr[-500:] if proc.stderr else "Language detection failed")
+                return
+            lang = proc.stdout.strip().splitlines()[-1].strip()
+            if lang:
+                self.detected.emit(lang)
         except Exception as exc:
             self.error.emit(str(exc))
 

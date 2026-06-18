@@ -483,7 +483,7 @@ class MainWindow(QMainWindow):
         self._status_bar.addPermanentWidget(self._update_btn)
 
         # Start background update check
-        app_version = "1.1.3"
+        app_version = "1.1.4"
         try:
             from PyQt6.QtWidgets import QApplication
             v = QApplication.applicationVersion()
