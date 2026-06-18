@@ -162,8 +162,12 @@ class FirstRunWizard(QDialog):
         self.setWindowTitle("CaptionStudio — First-time Setup")
         self.setMinimumSize(520, 420)
         self.setWindowFlags(
-            self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint
+            Qt.WindowType.Dialog
+            | Qt.WindowType.WindowTitleHint
+            | Qt.WindowType.WindowCloseButtonHint
+            | Qt.WindowType.WindowStaysOnTopHint
         )
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
 
         self._worker: SetupWorker | None = None
         self._stack = QStackedWidget()
@@ -215,7 +219,9 @@ class FirstRunWizard(QDialog):
         install_btn.setStyleSheet(
             "QPushButton { background:#1a6b3c; color:#fff; border-radius:4px; padding:6px 16px; }"
             "QPushButton:hover { background:#1e7d47; }"
+            "QPushButton:disabled { background:#1a3a2a; color:#4a7a5a; }"
         )
+        self._install_btn = install_btn
         install_btn.clicked.connect(self._start_install)
         btn_row.addWidget(cancel_btn)
         btn_row.addSpacing(8)
@@ -375,7 +381,13 @@ class FirstRunWizard(QDialog):
     # ── Logic ─────────────────────────────────────────────────────────────
 
     def _start_install(self) -> None:
+        # Disable install button immediately to prevent double-clicks
+        self._install_btn.setEnabled(False)
+        self._install_btn.setText("Installing…")
+
         self._stack.setCurrentIndex(1)
+        self.raise_()
+        self.activateWindow()
         for bar in self._step_bars:
             bar.setValue(0)
         self._log_box.clear()
@@ -414,4 +426,6 @@ class FirstRunWizard(QDialog):
         self.reject()
 
     def _retry(self) -> None:
+        self._install_btn.setEnabled(True)
+        self._install_btn.setText("Install")
         self._stack.setCurrentIndex(0)
