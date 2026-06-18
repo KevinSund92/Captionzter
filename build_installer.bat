@@ -17,7 +17,7 @@ if errorlevel 1 (
 :: Step 1: Build with PyInstaller
 echo [1/3] Building app bundle with PyInstaller...
 echo.
-pyinstaller build.spec --clean
+pyinstaller build.spec --clean -y
 if errorlevel 1 (
     echo.
     echo [ERROR] PyInstaller build failed.
@@ -53,7 +53,7 @@ echo.
 echo ============================================================
 echo  [3/3] Installer ready!
 echo.
-echo  Output: dist\installer\CaptionStudio_Setup_1.0.0.exe
+echo  Output: dist\installer\CaptionStudio_Setup_1.0.1.exe
 echo.
 echo  Upload this file to GitHub Releases.
 echo ============================================================
