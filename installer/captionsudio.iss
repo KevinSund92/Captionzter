@@ -7,7 +7,7 @@
 ;   - Inno Setup 6 installed (https://jrsoftware.org/isinfo.php)
 
 #define AppName      "CaptionStudio"
-#define AppVersion   "1.1.8"
+#define AppVersion   "1.1.9"
 #define AppPublisher "CaptionStudio"
 #define AppURL       "https://github.com/KevinSund92/Captionzter"
 #define AppExeName   "CaptionStudio.exe"
@@ -46,7 +46,7 @@ Source: "..\dist\{#AppName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesu
 [Icons]
 Name: "{group}\{#AppName}";          Filename: "{app}\{#AppExeName}"
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
-Name: "{commondesktop}\{#AppName}";   Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\{#AppName}";     Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(AppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
