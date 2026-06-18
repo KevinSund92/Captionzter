@@ -55,16 +55,65 @@ WHISPER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 # a plain ffmpeg.exe alias via hard link in <app>/bin/ and add that to PATH.
 # Hard links require no admin rights and use no extra disk space on NTFS.
 # ---------------------------------------------------------------------------
+def _ensure_ffmpeg_alias() -> str:
+    """
+    Find the imageio_ffmpeg binary and create ffmpeg.exe in LOCALAPPDATA/CaptionStudio/bin/.
+    Returns the bin dir path (already added to PATH in the current process).
+    Returns empty string if not found.
+    """
+    try:
+        local = os.environ.get("LOCALAPPDATA", "")
+        bin_dir = os.path.join(local, "CaptionStudio", "bin") if local else ""
+        if not bin_dir:
+            return ""
+        os.makedirs(bin_dir, exist_ok=True)
+        dest = os.path.join(bin_dir, "ffmpeg.exe")
+        if os.path.isfile(dest):
+            return bin_dir  # already set up
+
+        # Find imageio_ffmpeg in packages/
+        pkg = str(_packages_dir())
+        sys.path.insert(0, pkg)
+        try:
+            import imageio_ffmpeg
+            src = imageio_ffmpeg.get_ffmpeg_exe()
+        finally:
+            if pkg in sys.path:
+                sys.path.remove(pkg)
+
+        if not os.path.isfile(src):
+            return ""
+        try:
+            os.link(src, dest)
+        except OSError:
+            import shutil
+            shutil.copy2(src, dest)
+        return bin_dir
+    except Exception:
+        return ""
+
+
 def _ffmpeg_setup_snippet(pkg_dir: str) -> str:
     """Return Python code that ensures ffmpeg is on PATH inside a subprocess."""
+    bin_dir = _ensure_ffmpeg_alias()
+    if bin_dir:
+        # Fast path: ffmpeg.exe alias already exists, just add to PATH
+        return (
+            "import os\n"
+            f"_bin = {bin_dir!r}\n"
+            "if _bin not in os.environ.get('PATH',''):\n"
+            "    os.environ['PATH'] = _bin + os.pathsep + os.environ.get('PATH','')\n"
+        )
+    # Fallback: find via imageio_ffmpeg inside the subprocess
     return (
         "try:\n"
-        f"    import sys; sys.path.insert(0, {pkg_dir!r})\n"
-        "    import imageio_ffmpeg, os\n"
+        f"    import sys, os; sys.path.insert(0, {pkg_dir!r})\n"
+        "    import imageio_ffmpeg\n"
         "    _ff = imageio_ffmpeg.get_ffmpeg_exe()\n"
-        "    os.environ['PATH'] = os.path.dirname(_ff) + os.pathsep + os.environ.get('PATH','')\n"
-        "except Exception:\n"
-        "    pass\n"
+        "    _bd = os.path.dirname(_ff)\n"
+        "    os.environ['PATH'] = _bd + os.pathsep + os.environ.get('PATH','')\n"
+        "except Exception as _e:\n"
+        f"    raise RuntimeError('ffmpeg not found. Re-run setup.') from _e\n"
     )
 
 
