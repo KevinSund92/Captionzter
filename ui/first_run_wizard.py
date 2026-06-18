@@ -38,6 +38,45 @@ from PyQt6.QtWidgets import (
 # Each entry: (display_name, weight)
 # weight = relative share of total progress (used for the per-step bar)
 
+def _python_from_registry() -> List[str]:
+    """Read Python install paths from the Windows registry."""
+    results = []
+    try:
+        import winreg
+        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            for root_key in (r"Software\Python\PythonCore",
+                             r"Software\Wow6432Node\Python\PythonCore"):
+                try:
+                    with winreg.OpenKey(hive, root_key) as core:
+                        i = 0
+                        while True:
+                            try:
+                                ver = winreg.EnumKey(core, i)
+                                i += 1
+                                try:
+                                    with winreg.OpenKey(core, rf"{ver}\InstallPath") as ip:
+                                        install_dir, _ = winreg.QueryValueEx(ip, "ExecutablePath")
+                                        if install_dir and os.path.isfile(install_dir):
+                                            results.append(install_dir)
+                                except OSError:
+                                    # Try default value
+                                    try:
+                                        with winreg.OpenKey(core, rf"{ver}\InstallPath") as ip:
+                                            install_dir, _ = winreg.QueryValueEx(ip, "")
+                                            p = os.path.join(install_dir, "python.exe")
+                                            if os.path.isfile(p):
+                                                results.append(p)
+                                    except OSError:
+                                        pass
+                            except OSError:
+                                break
+                except OSError:
+                    continue
+    except Exception:
+        pass
+    return results
+
+
 _STEPS: List[Tuple[str, int]] = [
     ("PyTorch (AI engine)",    4),   # largest download
     ("Whisper (speech AI)",    2),
@@ -224,45 +263,56 @@ class SetupWorker(QThread):
         """Find a real Python 3 interpreter on this machine."""
         candidates = []
 
-        # 1. Direct python.exe / python3.exe on PATH (most reliable)
-        for name in ("python3.exe", "python.exe"):
-            p = shutil.which(name)
-            if p and os.path.isfile(p) and p != sys.executable:
-                candidates.append(p)
+        # 1. Windows registry — most reliable, works even without PATH
+        candidates += _python_from_registry()
 
-        # 2. Common Windows user-install location
-        base = os.path.expanduser(r"~\AppData\Local\Programs\Python")
-        if os.path.isdir(base):
-            for sub in sorted(os.listdir(base), reverse=True):
-                candidate = os.path.join(base, sub, "python.exe")
-                if os.path.isfile(candidate):
-                    candidates.append(candidate)
+        # 2. %LOCALAPPDATA%\Programs\Python\* (user install, default on Windows)
+        local_app = os.environ.get("LOCALAPPDATA", "")
+        if local_app:
+            base = os.path.join(local_app, "Programs", "Python")
+            if os.path.isdir(base):
+                for sub in sorted(os.listdir(base), reverse=True):
+                    p = os.path.join(base, sub, "python.exe")
+                    if os.path.isfile(p):
+                        candidates.append(p)
 
         # 3. System-wide installs
-        for root in (r"C:\Python312", r"C:\Python311", r"C:\Python310",
-                     r"C:\Python313", r"C:\Python314"):
+        for root in (
+            r"C:\Python314", r"C:\Python313", r"C:\Python312",
+            r"C:\Python311", r"C:\Python310",
+        ):
             p = os.path.join(root, "python.exe")
             if os.path.isfile(p):
                 candidates.append(p)
 
         # 4. Program Files
         for pf in (os.environ.get("ProgramFiles", ""), os.environ.get("ProgramFiles(x86)", "")):
-            for sub in ("Python312", "Python311", "Python310", "Python313", "Python314"):
+            if not pf:
+                continue
+            for sub in ("Python314", "Python313", "Python312", "Python311", "Python310"):
                 p = os.path.join(pf, sub, "python.exe")
                 if os.path.isfile(p):
                     candidates.append(p)
 
-        self.log_line.emit(f"Python candidates found: {candidates}")
+        # 5. PATH fallback
+        for name in ("python3.exe", "python.exe"):
+            p = shutil.which(name)
+            if p and os.path.isfile(p) and p != sys.executable:
+                candidates.append(p)
 
-        # Pick first candidate that actually runs
+        self.log_line.emit(f"Python candidates: {candidates}")
+
+        # Verify each candidate actually runs Python 3
         for p in candidates:
             try:
-                r = subprocess.run([p, "--version"], capture_output=True, text=True, timeout=5)
-                if r.returncode == 0 and "Python 3" in r.stdout + r.stderr:
-                    self.log_line.emit(f"Using: {p} ({(r.stdout + r.stderr).strip()})")
+                r = subprocess.run([p, "--version"],
+                                   capture_output=True, text=True, timeout=5)
+                ver = (r.stdout + r.stderr).strip()
+                if r.returncode == 0 and "Python 3" in ver:
+                    self.log_line.emit(f"Using: {p}  ({ver})")
                     return p
-            except Exception:
-                continue
+            except Exception as e:
+                self.log_line.emit(f"  skipped {p}: {e}")
 
         raise RuntimeError(
             "Python 3.10+ not found on this machine.\n"
