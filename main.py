@@ -18,11 +18,11 @@ else:
 os.environ["CAPTION_STUDIO_APP_DIR"] = APP_DIR
 
 # Add app-local packages dir to sys.path so torch/whisper (installed by the
-# first-run wizard into <APP_DIR>/packages/) are importable in the frozen app.
-if getattr(sys, "frozen", False):
-    _pkg_dir = os.path.join(APP_DIR, "packages")
-    if os.path.isdir(_pkg_dir) and _pkg_dir not in sys.path:
-        sys.path.insert(0, _pkg_dir)
+# first-run wizard into <APP_DIR>/packages/) are importable in both frozen
+# and dev-mode runs.
+_pkg_dir = os.path.join(APP_DIR, "packages")
+if os.path.isdir(_pkg_dir) and _pkg_dir not in sys.path:
+    sys.path.insert(0, _pkg_dir)
 
 from PyQt6.QtWidgets import QApplication, QDialog
 from PyQt6.QtCore import Qt
@@ -67,7 +67,7 @@ def main() -> None:
     app.setStyle("Fusion")
     app.setPalette(_dark_palette())   # dark palette → Fusion renders native widgets correctly
     app.setApplicationName("CaptionStudio")
-    app.setApplicationVersion("1.0.7")
+    app.setApplicationVersion("1.0.8")
     app.setOrganizationName("CaptionStudio")
 
     # First-run check — show setup wizard if heavy deps are missing
@@ -77,6 +77,9 @@ def main() -> None:
         wizard = FirstRunWizard()
         if wizard.exec() != QDialog.DialogCode.Accepted:
             sys.exit(0)   # user cancelled or setup failed
+        # Wizard may have just created packages/ — add it now so imports work
+        if _pkg_dir not in sys.path and os.path.isdir(_pkg_dir):
+            sys.path.insert(0, _pkg_dir)
 
     from ui.main_window import MainWindow
     window = MainWindow()
