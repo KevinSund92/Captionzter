@@ -55,20 +55,36 @@ class SetupWorker(QThread):
     finished      = pyqtSignal()
     error         = pyqtSignal(str)
 
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._cancelled = False
+        self._current_proc: Optional[subprocess.Popen] = None
+
+    def cancel(self) -> None:
+        """Signal cancellation and kill any running subprocess."""
+        self._cancelled = True
+        if self._current_proc and self._current_proc.poll() is None:
+            self._current_proc.kill()
+
     def run(self) -> None:
         try:
             self._install_torch()
+            self._check_cancelled()
             self._install_whisper_deps()
+            self._check_cancelled()
             self._download_whisper_model()
+            self._check_cancelled()
             self._ensure_ffmpeg()
             self.finished.emit()
+        except _CancelledError:
+            pass   # silently stop — wizard handles UI reset
         except Exception as exc:
             self.error.emit(str(exc))
 
     # ── Individual steps ──────────────────────────────────────────────────
 
     def _install_torch(self) -> None:
-        self.step_started.emit(0, "Installing PyTorch…")
+        self.step_started.emit(0, "Downloading PyTorch (~200 MB)…")
         self._run_pip(
             [
                 "install", "torch", "torchvision", "torchaudio",
@@ -78,7 +94,7 @@ class SetupWorker(QThread):
         )
 
     def _install_whisper_deps(self) -> None:
-        self.step_started.emit(1, "Installing Whisper and video tools…")
+        self.step_started.emit(1, "Downloading Whisper and video tools…")
         self._run_pip(
             [
                 "install",
@@ -93,63 +109,111 @@ class SetupWorker(QThread):
         )
 
     def _download_whisper_model(self) -> None:
-        self.step_started.emit(2, "Downloading Whisper 'small' model (~244 MB)…")
+        self.step_started.emit(2, "Downloading Whisper model (~244 MB)…")
         self.step_progress.emit(2, 0)
-        self.log_line.emit("Downloading whisper small model…")
 
-        pkg_dir  = self._pkg_dir()
-        app_dir  = os.environ.get("CAPTION_STUDIO_APP_DIR", ".")
+        pkg_dir   = self._pkg_dir()
+        app_dir   = os.environ.get("CAPTION_STUDIO_APP_DIR", ".")
         model_dir = os.path.join(app_dir, "models", "whisper")
+
+        # whisper uses tqdm which writes "\rXX%|..." to stderr — capture it
         code = (
-            f"import sys; sys.path.insert(0, {pkg_dir!r})\n"
-            f"import os; os.makedirs({model_dir!r}, exist_ok=True)\n"
+            "import sys, os\n"
+            f"sys.path.insert(0, {pkg_dir!r})\n"
+            f"os.makedirs({model_dir!r}, exist_ok=True)\n"
             f"os.environ['WHISPER_CACHE'] = {model_dir!r}\n"
             "import whisper\n"
             "whisper.load_model('small')\n"
-            "print('MODEL_OK')\n"
+            "print('MODEL_OK', flush=True)\n"
         )
         python = self._find_python()
-        result = subprocess.run(
+        proc = subprocess.Popen(
             [python, "-c", code],
-            capture_output=True, text=True, env=self._env(),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=self._env(), bufsize=0,
         )
-        for line in (result.stdout + result.stderr).splitlines():
-            self.log_line.emit(line)
-        if result.returncode != 0 or "MODEL_OK" not in result.stdout:
+        self._current_proc = proc
+
+        stdout_buf = []
+
+        # Read stderr char-by-char to catch tqdm \r progress lines
+        import threading
+        def _read_stderr():
+            buf = ""
+            while True:
+                ch = proc.stderr.read(1)  # type: ignore[union-attr]
+                if not ch:
+                    break
+                if ch in ("\r", "\n"):
+                    line = buf.strip()
+                    buf = ""
+                    if not line:
+                        continue
+                    self.log_line.emit(line)
+                    # tqdm format: "  X%|█..."  or "100%|..."
+                    pct = _parse_tqdm_pct(line)
+                    if pct is not None:
+                        self.step_progress.emit(2, pct)
+                else:
+                    buf += ch
+
+        t = threading.Thread(target=_read_stderr, daemon=True)
+        t.start()
+
+        for line in proc.stdout:  # type: ignore[union-attr]
+            stdout_buf.append(line.rstrip())
+        t.join()
+        proc.wait()
+
+        self._current_proc = None
+        if self._cancelled:
+            raise _CancelledError()
+        if proc.returncode != 0 or "MODEL_OK" not in "\n".join(stdout_buf):
             raise RuntimeError(
-                f"Whisper model download failed:\n{result.stderr or result.stdout}"
+                "Whisper model download failed. Check your internet connection."
             )
         self.step_progress.emit(2, 100)
 
     def _ensure_ffmpeg(self) -> None:
         self.step_started.emit(3, "Setting up ffmpeg…")
         self.step_progress.emit(3, 0)
-        self.log_line.emit("Locating ffmpeg binary…")
+        self.log_line.emit("Downloading ffmpeg binary…")
 
         pkg_dir = self._pkg_dir()
         code = (
-            f"import sys; sys.path.insert(0, {pkg_dir!r})\n"
+            "import sys\n"
+            f"sys.path.insert(0, {pkg_dir!r})\n"
             "import imageio_ffmpeg\n"
             "p = imageio_ffmpeg.get_ffmpeg_exe()\n"
-            "print('FFMPEG_OK:', p)\n"
+            "print('FFMPEG_OK:', p, flush=True)\n"
         )
         python = self._find_python()
-        result = subprocess.run(
+        proc = subprocess.Popen(
             [python, "-c", code],
-            capture_output=True, text=True, env=self._env(),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, env=self._env(),
         )
-        for line in (result.stdout + result.stderr).splitlines():
+        self._current_proc = proc
+        out_lines = []
+        for line in proc.stdout:  # type: ignore[union-attr]
+            line = line.rstrip()
             self.log_line.emit(line)
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"ffmpeg setup failed:\n{result.stderr or result.stdout}"
-            )
+            out_lines.append(line)
+        proc.wait()
+        self._current_proc = None
+        if self._cancelled:
+            raise _CancelledError()
+        if proc.returncode != 0:
+            raise RuntimeError("ffmpeg setup failed:\n" + "\n".join(out_lines))
         self.step_progress.emit(3, 100)
 
     # ── Helpers ───────────────────────────────────────────────────────────
 
+    def _check_cancelled(self) -> None:
+        if self._cancelled:
+            raise _CancelledError()
+
     def _pkg_dir(self) -> str:
-        """Directory where packages are installed (next to the exe)."""
         app_dir = os.environ.get("CAPTION_STUDIO_APP_DIR",
                                  os.path.dirname(os.path.abspath(__file__)))
         d = os.path.join(app_dir, "packages")
@@ -158,59 +222,124 @@ class SetupWorker(QThread):
 
     def _find_python(self) -> str:
         """Find a real Python interpreter — NOT the frozen exe."""
-        # 1. Windows 'py' launcher (installed alongside any Python on Windows)
         py = shutil.which("py")
         if py:
             self.log_line.emit(f"Using Python launcher: {py}")
             return py
-        # 2. python3 / python on PATH
         for name in ("python3", "python"):
             p = shutil.which(name)
             if p and p != sys.executable:
                 self.log_line.emit(f"Using Python: {p}")
                 return p
-        # 3. Common Windows install locations
-        for base in (
-            os.path.expanduser("~\\AppData\\Local\\Programs\\Python"),
-            "C:\\Python311", "C:\\Python310", "C:\\Python312", "C:\\Python313", "C:\\Python314",
-        ):
-            for sub in os.listdir(base) if os.path.isdir(base) else []:
+        base = os.path.expanduser("~\\AppData\\Local\\Programs\\Python")
+        if os.path.isdir(base):
+            for sub in sorted(os.listdir(base), reverse=True):
                 candidate = os.path.join(base, sub, "python.exe")
                 if os.path.isfile(candidate):
                     self.log_line.emit(f"Found Python: {candidate}")
                     return candidate
         raise RuntimeError(
-            "Python 3.10+ not found on this machine.\n"
+            "Python 3.10+ not found.\n"
             "Please install Python from https://python.org and try again."
         )
 
     def _run_pip(self, args: list, step: int) -> None:
-        python  = self._find_python()
-        target  = self._pkg_dir()
-        # Use 'py -3' syntax if it's the py launcher
+        """Run pip with --target, reading output char-by-char to catch \\r progress."""
+        python = self._find_python()
+        target = self._pkg_dir()
         if os.path.basename(python).lower() == "py.exe":
             base_cmd = [python, "-3", "-m", "pip"]
         else:
             base_cmd = [python, "-m", "pip"]
-        cmd = base_cmd + args + ["--target", target]
+        cmd = base_cmd + args + ["--target", target, "--progress-bar", "on"]
         self.log_line.emit(f"Running: {' '.join(cmd)}")
+
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, env=self._env(),
+            text=True, env=self._env(), bufsize=0,
         )
-        lines_seen = 0
-        for line in proc.stdout:  # type: ignore[union-attr]
-            line = line.rstrip()
-            self.log_line.emit(line)
-            lines_seen += 1
-            self.step_progress.emit(step, min(95, lines_seen * 3))
+        self._current_proc = proc
+
+        buf = ""
+        last_pct = 0
+        while True:
+            ch = proc.stdout.read(1)  # type: ignore[union-attr]
+            if not ch:
+                break
+            if ch in ("\r", "\n"):
+                line = _strip_ansi(buf).strip()
+                buf = ""
+                if not line:
+                    continue
+                self.log_line.emit(line)
+                # pip progress lines: "189.9/200.0 MB  5.2 MB/s"
+                pct = _parse_pip_pct(line)
+                if pct is not None and pct > last_pct:
+                    last_pct = pct
+                    self.step_progress.emit(step, pct)
+                elif last_pct < 5:
+                    # No progress info yet — pulse slowly
+                    last_pct = min(last_pct + 1, 10)
+                    self.step_progress.emit(step, last_pct)
+            else:
+                buf += ch
+
         proc.wait()
+        self._current_proc = None
+        if self._cancelled:
+            raise _CancelledError()
         if proc.returncode != 0:
-            raise RuntimeError(f"pip exited with code {proc.returncode}")
+            raise RuntimeError(f"pip failed with exit code {proc.returncode}")
         self.step_progress.emit(step, 100)
 
     def _env(self) -> dict:
-        return os.environ.copy()
+        e = os.environ.copy()
+        # Force tqdm to write plain text (no fancy terminal codes)
+        e["TQDM_DISABLE"] = "0"
+        e["PYTHONUNBUFFERED"] = "1"
+        return e
+
+
+class _CancelledError(Exception):
+    pass
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape codes from a string."""
+    import re
+    return re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
+
+
+def _parse_pip_pct(line: str) -> Optional[int]:
+    """
+    Parse percentage from pip download progress lines.
+    pip outputs: '   189.9/200.0 MB  5.2 MB/s  eta 0:00:02'
+    or with progress bar: '━━━━━ 189.9/200.0 MB ...'
+    """
+    import re
+    # Pattern: <downloaded>/<total> MB
+    m = re.search(r"([\d.]+)\s*/\s*([\d.]+)\s*[MmGgKk][Bb]", line)
+    if m:
+        try:
+            done  = float(m.group(1))
+            total = float(m.group(2))
+            if total > 0:
+                return min(99, int(done / total * 100))
+        except ValueError:
+            pass
+    return None
+
+
+def _parse_tqdm_pct(line: str) -> Optional[int]:
+    """
+    Parse percentage from tqdm output lines.
+    tqdm format: ' 42%|████      | 103M/244M ...'
+    """
+    import re
+    m = re.match(r"\s*(\d+)%\s*\|", line)
+    if m:
+        return min(99, int(m.group(1)))
+    return None
 
 
 # ── Wizard dialog ─────────────────────────────────────────────────────────────
@@ -484,8 +613,8 @@ class FirstRunWizard(QDialog):
 
     def _on_cancel_install(self) -> None:
         if self._worker and self._worker.isRunning():
-            self._worker.terminate()
-            self._worker.wait()
+            self._worker.cancel()
+            self._worker.wait(3000)   # give it 3s to die cleanly
         self.reject()
 
     def _retry(self) -> None:
