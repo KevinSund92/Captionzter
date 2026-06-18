@@ -60,7 +60,7 @@ def main() -> None:
     app.setStyle("Fusion")
     app.setPalette(_dark_palette())   # dark palette → Fusion renders native widgets correctly
     app.setApplicationName("CaptionStudio")
-    app.setApplicationVersion("1.0.1")
+    app.setApplicationVersion("1.0.2")
     app.setOrganizationName("CaptionStudio")
 
     # First-run check — show setup wizard if heavy deps are missing
