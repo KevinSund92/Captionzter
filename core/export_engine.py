@@ -31,7 +31,29 @@ from core.caption_model import CaptionSegment, CaptionStyle, get_caption_blocks
 
 # ── ffmpeg / ffprobe discovery ────────────────────────────────────────────────
 
+def _cs_bin_dir() -> str:
+    """Return the LOCALAPPDATA/CaptionStudio/bin/ directory (created by whisper_manager)."""
+    local = os.environ.get("LOCALAPPDATA", "")
+    if local:
+        return os.path.join(local, "CaptionStudio", "bin")
+    return ""
+
+
 def _ffmpeg_bin() -> str:
+    # Prefer the ffmpeg.exe alias in LOCALAPPDATA/CaptionStudio/bin/
+    bin_dir = _cs_bin_dir()
+    alias = os.path.join(bin_dir, "ffmpeg.exe")
+    if os.path.isfile(alias):
+        return alias
+    # Alias not yet created — try to create it now via whisper_manager helper
+    try:
+        from core.whisper_manager import _ensure_ffmpeg_alias
+        _ensure_ffmpeg_alias()
+        if os.path.isfile(alias):
+            return alias
+    except Exception:
+        pass
+    # Last resort: ask imageio_ffmpeg directly (works in dev mode)
     try:
         import imageio_ffmpeg
         return imageio_ffmpeg.get_ffmpeg_exe()
@@ -40,15 +62,13 @@ def _ffmpeg_bin() -> str:
 
 
 def _ffprobe_bin() -> str:
-    try:
-        import imageio_ffmpeg
-        exe = imageio_ffmpeg.get_ffmpeg_exe()
-        for name in ("ffprobe.exe", "ffprobe"):
-            probe = os.path.join(os.path.dirname(exe), name)
-            if os.path.exists(probe):
-                return probe
-    except Exception:
-        pass
+    # ffprobe lives next to ffmpeg in imageio_ffmpeg's binaries folder
+    ffmpeg = _ffmpeg_bin()
+    parent = os.path.dirname(ffmpeg)
+    for name in ("ffprobe.exe", "ffprobe"):
+        probe = os.path.join(parent, name)
+        if os.path.isfile(probe):
+            return probe
     return "ffprobe"
 
 

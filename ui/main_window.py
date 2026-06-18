@@ -483,7 +483,7 @@ class MainWindow(QMainWindow):
         self._status_bar.addPermanentWidget(self._update_btn)
 
         # Start background update check
-        app_version = "1.2.0"
+        app_version = "1.2.1"
         try:
             from PyQt6.QtWidgets import QApplication
             v = QApplication.applicationVersion()
@@ -739,7 +739,10 @@ class MainWindow(QMainWindow):
         from ui.export_dialog import ExportSettingsDialog
 
         # Probe source so dialog can show current values
-        info = _probe(self._video_path)
+        try:
+            info = _probe(self._video_path)
+        except Exception:
+            info = {"width": 0, "height": 0, "fps": 0.0, "bitrate": 0}
 
         dlg = ExportSettingsDialog(
             info["width"], info["height"], info["fps"], info["bitrate"], self
