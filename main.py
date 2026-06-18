@@ -58,7 +58,41 @@ def _dark_palette() -> QPalette:
     return p
 
 
+def _install_crash_handler() -> None:
+    """Show a message box (and write a log file) for any unhandled exception."""
+    import traceback
+
+    def _handler(exc_type, exc_value, exc_tb):
+        msg = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        # Write to log file next to exe so user can send it
+        try:
+            log_path = os.path.join(
+                os.environ.get("LOCALAPPDATA", APP_DIR),
+                "CaptionStudio", "crash.log"
+            )
+            os.makedirs(os.path.dirname(log_path), exist_ok=True)
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write(msg)
+        except Exception:
+            pass
+        # Show message box if Qt is running
+        try:
+            from PyQt6.QtWidgets import QMessageBox
+            box = QMessageBox()
+            box.setWindowTitle("CaptionStudio — Unexpected Error")
+            box.setIcon(QMessageBox.Icon.Critical)
+            box.setText("An unexpected error occurred.")
+            box.setDetailedText(msg)
+            box.exec()
+        except Exception:
+            pass
+
+    sys.excepthook = _handler
+
+
 def main() -> None:
+    _install_crash_handler()
+
     # High-DPI is on by default in Qt6; just make sure rounding policy is clean
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
@@ -68,7 +102,7 @@ def main() -> None:
     app.setStyle("Fusion")
     app.setPalette(_dark_palette())   # dark palette → Fusion renders native widgets correctly
     app.setApplicationName("CaptionStudio")
-    app.setApplicationVersion("1.2.2")
+    app.setApplicationVersion("1.2.3")
     app.setOrganizationName("CaptionStudio")
 
     # First-run check — show setup wizard if heavy deps are missing
