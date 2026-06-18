@@ -61,50 +61,36 @@ def _ffmpeg_bin() -> str:
         return "ffmpeg"
 
 
-def _ffprobe_bin() -> str:
-    # ffprobe lives next to ffmpeg in imageio_ffmpeg's binaries folder
-    ffmpeg = _ffmpeg_bin()
-    parent = os.path.dirname(ffmpeg)
-    for name in ("ffprobe.exe", "ffprobe"):
-        probe = os.path.join(parent, name)
-        if os.path.isfile(probe):
-            return probe
-    return "ffprobe"
-
-
 # ── Source probing ────────────────────────────────────────────────────────────
 
 def _probe(source: str) -> dict:
-    cmd = [
-        _ffprobe_bin(), "-v", "quiet",
-        "-print_format", "json",
-        "-show_streams", "-show_format",
-        source,
-    ]
+    """Probe video using ffmpeg -i (no ffprobe — imageio_ffmpeg only ships ffmpeg)."""
     try:
-        out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
-        data = json.loads(out)
-        video = next(
-            (s for s in data.get("streams", []) if s.get("codec_type") == "video"), {}
+        result = subprocess.run(
+            [_ffmpeg_bin(), "-i", source],
+            capture_output=True, text=True,
+            creationflags=_NO_WINDOW,
         )
-        w = int(video.get("width", 1920))
-        h = int(video.get("height", 1080))
-        bitrate = int(
-            video.get("bit_rate")
-            or data.get("format", {}).get("bit_rate")
-            or 5_000_000
-        )
-        # Parse fps from r_frame_rate (e.g. "30000/1001" or "30/1")
+        text = result.stderr  # ffmpeg always writes info to stderr
+
+        w, h = 0, 0
+        m = re.search(r"(\d{2,5})x(\d{2,5})", text)
+        if m:
+            w, h = int(m.group(1)), int(m.group(2))
+
+        bitrate = 0
+        m = re.search(r"bitrate:\s*(\d+)\s*kb/s", text)
+        if m:
+            bitrate = int(m.group(1)) * 1000
+
         fps = 0.0
-        try:
-            fr = video.get("r_frame_rate", "0/1")
-            num, den = fr.split("/")
-            fps = round(int(num) / int(den), 3)
-        except Exception:
-            fps = 0.0
+        m = re.search(r"([\d.]+)\s*fps", text)
+        if m:
+            fps = float(m.group(1))
+
         return {"width": w, "height": h, "bitrate": bitrate, "fps": fps}
     except Exception:
-        return {"width": 1920, "height": 1080, "bitrate": 5_000_000}
+        return {"width": 0, "height": 0, "bitrate": 0, "fps": 0.0}
 
 
 # ── Text / path escaping ──────────────────────────────────────────────────────

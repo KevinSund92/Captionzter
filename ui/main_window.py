@@ -483,7 +483,7 @@ class MainWindow(QMainWindow):
         self._status_bar.addPermanentWidget(self._update_btn)
 
         # Start background update check
-        app_version = "1.2.1"
+        app_version = "1.2.2"
         try:
             from PyQt6.QtWidgets import QApplication
             v = QApplication.applicationVersion()
@@ -747,7 +747,7 @@ class MainWindow(QMainWindow):
         dlg = ExportSettingsDialog(
             info["width"], info["height"], info["fps"], info["bitrate"], self
         )
-        if dlg.exec() != ExportSettingsDialog.DialogCode.Accepted:
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
         out_path, _ = QFileDialog.getSaveFileName(
