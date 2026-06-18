@@ -39,7 +39,14 @@ def _marker_path() -> str:
 
 def needs_setup() -> bool:
     """Return True if the first-run wizard has not completed yet."""
-    return not os.path.exists(_marker_path())
+    if not os.path.exists(_marker_path()):
+        return True
+    # Also verify the packages are actually present — marker may exist from a
+    # previous failed/partial install (e.g. Access Denied in an older version).
+    whisper_dir = os.path.join(packages_dir(), "whisper")
+    if not os.path.isdir(whisper_dir):
+        return True
+    return False
 
 
 def mark_setup_complete() -> None:

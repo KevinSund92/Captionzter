@@ -164,15 +164,20 @@ class WhisperTranscriber(QObject):
             try:
                 import whisper
             except ModuleNotFoundError:
-                self.error.emit(
-                    "openai-whisper is not installed.\n\n"
-                    "Run the following commands in your terminal:\n\n"
-                    "  pip install torch torchvision torchaudio "
-                    "--index-url https://download.pytorch.org/whl/cpu\n"
-                    "  pip install -r requirements.txt\n\n"
-                    "Then restart CaptionStudio."
-                )
-                return
+                # Last-ditch attempt: ensure packages/ is in sys.path
+                try:
+                    from core.first_run_check import packages_dir
+                    _pkg = packages_dir()
+                    if _pkg not in sys.path:
+                        sys.path.insert(0, _pkg)
+                    import whisper  # noqa: F811
+                except ModuleNotFoundError:
+                    self.error.emit(
+                        "openai-whisper is not installed.\n\n"
+                        "Please restart CaptionStudio — the setup wizard will\n"
+                        "run again automatically to reinstall missing components."
+                    )
+                    return
 
             # Decide Whisper task
             same_lang = (
