@@ -53,7 +53,7 @@ echo.
 echo ============================================================
 echo  [3/3] Installer ready!
 echo.
-echo  Output: dist\installer\CaptionStudio_Setup_1.1.2.exe
+echo  Output: dist\installer\CaptionStudio_Setup_1.1.3.exe
 echo.
 echo  Upload this file to GitHub Releases.
 echo ============================================================

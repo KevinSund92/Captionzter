@@ -668,14 +668,15 @@ class FirstRunWizard(QDialog):
 
         v.addStretch()
 
-        launch_btn = QPushButton("Launch CaptionStudio")
-        launch_btn.setFixedWidth(200)
+        launch_btn = QPushButton("Restart CaptionStudio")
+        launch_btn.setFixedWidth(220)
         launch_btn.setDefault(True)
         launch_btn.setStyleSheet(
             "QPushButton { background:#1a6b3c; color:#fff; border-radius:4px; padding:8px 20px; font-size:13px; }"
             "QPushButton:hover { background:#1e7d47; }"
         )
-        launch_btn.clicked.connect(self.accept)
+        launch_btn.clicked.connect(self._restart_app)
+        self._launch_btn = launch_btn
 
         center = QHBoxLayout()
         center.addStretch()
@@ -769,6 +770,9 @@ class FirstRunWizard(QDialog):
         from core.first_run_check import mark_setup_complete
         mark_setup_complete()
         self._stack.setCurrentIndex(2)
+        # Update done-page button to say "Restart" instead of "Launch"
+        if hasattr(self, "_launch_btn"):
+            self._launch_btn.setText("Restart CaptionStudio")
 
     def _on_error(self, msg: str) -> None:
         self._error_label.setText(msg)
@@ -784,3 +788,11 @@ class FirstRunWizard(QDialog):
         self._install_btn.setEnabled(True)
         self._install_btn.setText("Install")
         self._stack.setCurrentIndex(0)
+
+    def _restart_app(self) -> None:
+        """Relaunch the app in a fresh process so newly installed packages load."""
+        import subprocess
+        subprocess.Popen([sys.executable] + sys.argv)
+        self.accept()
+        from PyQt6.QtWidgets import QApplication
+        QApplication.instance().quit()
