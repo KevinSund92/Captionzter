@@ -25,6 +25,8 @@ import subprocess
 import sys
 from typing import List, Optional, Tuple
 
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
@@ -182,7 +184,7 @@ class SetupWorker(QThread):
         # Bootstrap pip if missing
         pip_ok = subprocess.run(
             [py_exe, "-m", "pip", "--version"],
-            capture_output=True,
+            capture_output=True, creationflags=_NO_WINDOW,
         ).returncode == 0
 
         if not pip_ok:
@@ -193,7 +195,7 @@ class SetupWorker(QThread):
             self.step_progress.emit(0, 75)
             r = subprocess.run(
                 [py_exe, get_pip],
-                capture_output=True, text=True,
+                capture_output=True, text=True, creationflags=_NO_WINDOW,
             )
             self.log_line.emit(r.stdout[-500:] if r.stdout else "")
             if r.returncode != 0:
@@ -250,7 +252,7 @@ class SetupWorker(QThread):
         proc = subprocess.Popen(
             [python, "-c", code],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, env=self._env(), bufsize=0,
+            text=True, env=self._env(), bufsize=0, creationflags=_NO_WINDOW,
         )
         self._current_proc = proc
 
@@ -311,7 +313,7 @@ class SetupWorker(QThread):
         proc = subprocess.Popen(
             [python, "-c", code],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, env=self._env(),
+            text=True, env=self._env(), creationflags=_NO_WINDOW,
         )
         self._current_proc = proc
         out_lines = []
@@ -393,7 +395,8 @@ class SetupWorker(QThread):
         for p in candidates:
             try:
                 r = subprocess.run([p, "--version"],
-                                   capture_output=True, text=True, timeout=5)
+                                   capture_output=True, text=True, timeout=5,
+                                   creationflags=_NO_WINDOW)
                 ver = (r.stdout + r.stderr).strip()
                 if r.returncode == 0 and "Python 3" in ver:
                     if not silent:
@@ -419,7 +422,7 @@ class SetupWorker(QThread):
 
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, env=self._env(), bufsize=0,
+            text=True, env=self._env(), bufsize=0, creationflags=_NO_WINDOW,
         )
         self._current_proc = proc
 
@@ -792,7 +795,7 @@ class FirstRunWizard(QDialog):
     def _restart_app(self) -> None:
         """Relaunch the app in a fresh process so newly installed packages load."""
         import subprocess
-        subprocess.Popen([sys.executable] + sys.argv)
+        subprocess.Popen([sys.executable] + sys.argv, creationflags=_NO_WINDOW)
         self.accept()
         from PyQt6.QtWidgets import QApplication
         QApplication.instance().quit()

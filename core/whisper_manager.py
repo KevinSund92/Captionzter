@@ -30,6 +30,9 @@ import threading
 from pathlib import Path
 from typing import Callable, Optional
 
+# Suppress CMD window on Windows for all subprocesses
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+
 from PyQt6.QtCore import QObject, pyqtSignal
 
 # ---------------------------------------------------------------------------
@@ -125,12 +128,12 @@ def _find_worker_python() -> str:
         if not os.path.isfile(p):
             continue
         try:
-            r = subprocess.run([p, "--version"], capture_output=True, text=True, timeout=5)
+            r = subprocess.run([p, "--version"], capture_output=True, text=True, timeout=5, creationflags=_NO_WINDOW)
             if r.returncode == 0 and "Python 3" in (r.stdout + r.stderr):
                 # Prefer Python that can actually import whisper from our packages/
                 check = subprocess.run(
                     [p, "-c", f"import sys; sys.path.insert(0,{pkg_dir!r}); import whisper"],
-                    capture_output=True, timeout=30,
+                    capture_output=True, timeout=30, creationflags=_NO_WINDOW,
                 )
                 if check.returncode == 0:
                     return p
@@ -142,7 +145,7 @@ def _find_worker_python() -> str:
         if not os.path.isfile(p):
             continue
         try:
-            r = subprocess.run([p, "--version"], capture_output=True, text=True, timeout=5)
+            r = subprocess.run([p, "--version"], capture_output=True, text=True, timeout=5, creationflags=_NO_WINDOW)
             if r.returncode == 0 and "Python 3" in (r.stdout + r.stderr):
                 return p
         except Exception:
@@ -280,7 +283,7 @@ class WhisperTranscriber(QObject):
             proc = subprocess.Popen(
                 [python, "-c", script],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, env=env,
+                text=True, env=env, creationflags=_NO_WINDOW,
             )
             self._proc = proc
 
@@ -367,7 +370,7 @@ class LanguageDetector(QObject):
             env["PYTHONUNBUFFERED"] = "1"
             proc = subprocess.run(
                 [python, "-c", script],
-                capture_output=True, text=True, env=env,
+                capture_output=True, text=True, env=env, creationflags=_NO_WINDOW,
             )
             if proc.returncode != 0:
                 self.error.emit(proc.stderr[-500:] if proc.stderr else "Language detection failed")
