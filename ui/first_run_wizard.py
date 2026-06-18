@@ -221,37 +221,59 @@ class SetupWorker(QThread):
         return d
 
     def _find_python(self) -> str:
-        """Find a real Python interpreter — NOT the frozen exe."""
-        py = shutil.which("py")
-        if py:
-            self.log_line.emit(f"Using Python launcher: {py}")
-            return py
-        for name in ("python3", "python"):
+        """Find a real Python 3 interpreter on this machine."""
+        candidates = []
+
+        # 1. Direct python.exe / python3.exe on PATH (most reliable)
+        for name in ("python3.exe", "python.exe"):
             p = shutil.which(name)
-            if p and p != sys.executable:
-                self.log_line.emit(f"Using Python: {p}")
-                return p
-        base = os.path.expanduser("~\\AppData\\Local\\Programs\\Python")
+            if p and os.path.isfile(p) and p != sys.executable:
+                candidates.append(p)
+
+        # 2. Common Windows user-install location
+        base = os.path.expanduser(r"~\AppData\Local\Programs\Python")
         if os.path.isdir(base):
             for sub in sorted(os.listdir(base), reverse=True):
                 candidate = os.path.join(base, sub, "python.exe")
                 if os.path.isfile(candidate):
-                    self.log_line.emit(f"Found Python: {candidate}")
-                    return candidate
+                    candidates.append(candidate)
+
+        # 3. System-wide installs
+        for root in (r"C:\Python312", r"C:\Python311", r"C:\Python310",
+                     r"C:\Python313", r"C:\Python314"):
+            p = os.path.join(root, "python.exe")
+            if os.path.isfile(p):
+                candidates.append(p)
+
+        # 4. Program Files
+        for pf in (os.environ.get("ProgramFiles", ""), os.environ.get("ProgramFiles(x86)", "")):
+            for sub in ("Python312", "Python311", "Python310", "Python313", "Python314"):
+                p = os.path.join(pf, sub, "python.exe")
+                if os.path.isfile(p):
+                    candidates.append(p)
+
+        self.log_line.emit(f"Python candidates found: {candidates}")
+
+        # Pick first candidate that actually runs
+        for p in candidates:
+            try:
+                r = subprocess.run([p, "--version"], capture_output=True, text=True, timeout=5)
+                if r.returncode == 0 and "Python 3" in r.stdout + r.stderr:
+                    self.log_line.emit(f"Using: {p} ({(r.stdout + r.stderr).strip()})")
+                    return p
+            except Exception:
+                continue
+
         raise RuntimeError(
-            "Python 3.10+ not found.\n"
-            "Please install Python from https://python.org and try again."
+            "Python 3.10+ not found on this machine.\n"
+            "Please install Python from https://python.org then run the app again."
         )
 
     def _run_pip(self, args: list, step: int) -> None:
         """Run pip with --target, reading output char-by-char to catch \\r progress."""
         python = self._find_python()
         target = self._pkg_dir()
-        if os.path.basename(python).lower() == "py.exe":
-            base_cmd = [python, "-3", "-m", "pip"]
-        else:
-            base_cmd = [python, "-m", "pip"]
-        cmd = base_cmd + args + ["--target", target, "--progress-bar", "on"]
+        cmd = [python, "-m", "pip"] + args + ["--target", target, "--progress-bar", "on"]
         self.log_line.emit(f"Running: {' '.join(cmd)}")
 
         proc = subprocess.Popen(
