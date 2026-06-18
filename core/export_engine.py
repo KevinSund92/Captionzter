@@ -201,6 +201,28 @@ def _make_pil_font(style: CaptionStyle, fontsize_px: int):
         return None
 
 
+def char_advance_widths(style: CaptionStyle) -> dict:
+    """Return a dict mapping char → advance width (px) using PIL, for preview/export consistency.
+    Falls back to empty dict; callers should then use Qt metrics."""
+    fontsize_px = max(1, round(style.font_size * 96 / 72))
+    font = _make_pil_font(style, fontsize_px)
+    if font is None:
+        return {}
+    cache: dict = {}
+    def _w(ch: str) -> float:
+        if ch not in cache:
+            try:
+                cache[ch] = font.getlength(ch)
+            except Exception:
+                try:
+                    bb = font.getbbox(ch)
+                    cache[ch] = bb[2] - bb[0]
+                except Exception:
+                    cache[ch] = fontsize_px * 0.55
+        return cache[ch]
+    return _w  # return callable, not dict
+
+
 def _text_width(pil_font, text: str, fontsize_px: int) -> float:
     """Return pixel width of text using Pillow, falling back to estimation."""
     if pil_font is None:
@@ -476,7 +498,8 @@ class ExportWorker(QObject):
             ffmpeg = _ffmpeg_bin()
             cmd = [
                 ffmpeg, "-y",
-                "-err_detect", "ignore_err",  # tolerate AV1/HEVC decode errors
+                "-err_detect", "ignore_err",  # tolerate AV1/HEVC partial decode errors
+                "-fflags", "+discardcorrupt",  # discard corrupt packets instead of aborting
                 "-i", self.source_path,
                 "-filter_script:v", filter_file,
             ]

@@ -28,6 +28,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import QGraphicsObject, QStyleOptionGraphicsItem, QWidget
 
 from core.caption_model import CaptionStyle, WordToken
+from core.export_engine import char_advance_widths as _pil_char_widths
 
 # Default animation durations — overridden by CaptionStyle.anim_duration
 _ANIM_DUR_DEFAULT = 0.35
@@ -68,6 +69,7 @@ class CaptionCanvas(QGraphicsObject):
 
     def set_style(self, style: CaptionStyle) -> None:
         self._style = style
+        self._pil_adv_cache = (-1, None)  # invalidate PIL advance cache on style change
         # Do NOT call _apply_style_pos here — per-segment positions are managed
         # externally by main_window. Only set_scene_size repositions the canvas.
         self.prepareGeometryChange()
@@ -293,13 +295,31 @@ class CaptionCanvas(QGraphicsObject):
         else:
             painter.drawLine(-10, int(handle_y), 10, int(handle_y))
 
+    def _pil_adv(self):
+        """Return PIL char-advance callable (cached per style instance), or None."""
+        style_id = id(self._style)
+        if not hasattr(self, "_pil_adv_cache") or self._pil_adv_cache[0] != style_id:
+            try:
+                fn = _pil_char_widths(self._style)
+                self._pil_adv_cache = (style_id, fn)
+            except Exception:
+                self._pil_adv_cache = (style_id, None)
+        return self._pil_adv_cache[1]
+
+    def _char_w(self, fm, ch: str, pil_adv) -> int:
+        """Advance width of a single character — use PIL when available so preview matches export."""
+        if pil_adv is not None:
+            return round(pil_adv(ch))
+        return fm.horizontalAdvance(ch)
+
     def _measure_word(self, fm, word: str, lsp: int) -> int:
         """Width of word with per-character letter spacing applied."""
         if lsp == 0:
             return fm.horizontalAdvance(word)
+        pil_adv = self._pil_adv()
         total = 0
         for ch in word:
-            total += fm.horizontalAdvance(ch) + lsp
+            total += self._char_w(fm, ch, pil_adv) + lsp
         return max(0, total - lsp)   # no trailing gap on last char
 
     def _measure_line(self, fm, line: str, lsp: int, wsp: int) -> int:
@@ -315,10 +335,11 @@ class CaptionCanvas(QGraphicsObject):
             self._draw_word(painter, text, x, y, fg, ol, olw)
             return
         fm = painter.fontMetrics()
+        pil_adv = self._pil_adv()
         cx = x
         for ch in text:
             self._draw_word(painter, ch, cx, y, fg, ol, olw)
-            cx += fm.horizontalAdvance(ch) + lsp
+            cx += self._char_w(fm, ch, pil_adv) + lsp
 
     def _draw_word(self, painter, text, x, y, fg, ol, olw):
         if olw:
