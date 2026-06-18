@@ -483,7 +483,7 @@ class MainWindow(QMainWindow):
         self._status_bar.addPermanentWidget(self._update_btn)
 
         # Start background update check
-        app_version = "1.1.7"
+        app_version = "1.1.8"
         try:
             from PyQt6.QtWidgets import QApplication
             v = QApplication.applicationVersion()
@@ -735,6 +735,18 @@ class MainWindow(QMainWindow):
                                 "Load a video and transcribe it first.")
             return
 
+        from core.export_engine import _probe, ExportWorker
+        from ui.export_dialog import ExportSettingsDialog
+
+        # Probe source so dialog can show current values
+        info = _probe(self._video_path)
+
+        dlg = ExportSettingsDialog(
+            info["width"], info["height"], info["fps"], info["bitrate"], self
+        )
+        if dlg.exec() != ExportSettingsDialog.DialogCode.Accepted:
+            return
+
         out_path, _ = QFileDialog.getSaveFileName(
             self, "Save Output Video", "", "MP4 Video (*.mp4)"
         )
@@ -743,10 +755,13 @@ class MainWindow(QMainWindow):
         if not out_path.lower().endswith(".mp4"):
             out_path += ".mp4"
 
-        from core.export_engine import ExportWorker
-
         style  = self._style_panel.current_style()
-        worker = ExportWorker(self._video_path, out_path, self._segments, style)
+        worker = ExportWorker(
+            self._video_path, out_path, self._segments, style,
+            res_override=dlg.resolution(),
+            fps_override=dlg.fps(),
+            bitrate_override=dlg.bitrate(),
+        )
         thread = QThread(self)
         worker.moveToThread(thread)
 

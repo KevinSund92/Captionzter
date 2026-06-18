@@ -51,7 +51,7 @@ class CaptionStyle:
     outline_width:  int           = 2
     highlight_color: str          = "#FFD700"   # karaoke highlight
     karaoke:        bool          = False
-    words_per_line: int           = 0                   # 0 = no limit
+    words_per_line: int           = 3
     rows_visible:   int           = 1                   # rows shown at once
     text_align:     str           = "center"            # "left" | "center" | "right"
     position:       Tuple[float, float] = (0.5, 0.85)  # normalized (x, y)

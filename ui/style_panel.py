@@ -222,7 +222,7 @@ class StylePanel(QWidget):
         g.setColumnStretch(3, 0)
 
         g.addWidget(_label("Words / row"), 0, 0)
-        self._wpl_spin = _spin(0, 20, 0, "Words per row (0 = unlimited)")
+        self._wpl_spin = _spin(0, 20, 3, "Words per row (0 = unlimited)")
         self._wpl_spin.setSpecialValueText("∞")
         self._wpl_spin.setFixedWidth(60)
         self._wpl_spin.valueChanged.connect(self._emit)

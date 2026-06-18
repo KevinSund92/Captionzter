@@ -74,7 +74,15 @@ def _probe(source: str) -> dict:
             or data.get("format", {}).get("bit_rate")
             or 5_000_000
         )
-        return {"width": w, "height": h, "bitrate": bitrate}
+        # Parse fps from r_frame_rate (e.g. "30000/1001" or "30/1")
+        fps = 0.0
+        try:
+            fr = video.get("r_frame_rate", "0/1")
+            num, den = fr.split("/")
+            fps = round(int(num) / int(den), 3)
+        except Exception:
+            fps = 0.0
+        return {"width": w, "height": h, "bitrate": bitrate, "fps": fps}
     except Exception:
         return {"width": 1920, "height": 1080, "bitrate": 5_000_000}
 
@@ -405,14 +413,19 @@ class ExportWorker(QObject):
     finished = pyqtSignal(str)
     error    = pyqtSignal(str)
 
-    def __init__(self, source_path, output_path, segments, style, parent=None):
+    def __init__(self, source_path, output_path, segments, style,
+                 res_override=None, fps_override=None, bitrate_override=None,
+                 parent=None):
         super().__init__(parent)
-        self.source_path = source_path
-        self.output_path = output_path
-        self.segments    = segments
-        self.style       = style
-        self._cancelled  = False
-        self._proc       = None
+        self.source_path      = source_path
+        self.output_path      = output_path
+        self.segments         = segments
+        self.style            = style
+        self.res_override     = res_override    # (w, h) or None
+        self.fps_override     = fps_override    # float or None
+        self.bitrate_override = bitrate_override  # int (bps) or None
+        self._cancelled       = False
+        self._proc            = None
 
     def cancel(self) -> None:
         self._cancelled = True
@@ -426,13 +439,17 @@ class ExportWorker(QObject):
             self.progress.emit(2)
 
             info    = _probe(self.source_path)
-            w, h    = info["width"], info["height"]
-            bitrate = info["bitrate"]
+            src_w, src_h = info["width"], info["height"]
+            w, h = self.res_override if self.res_override else (src_w, src_h)
+            bitrate = self.bitrate_override if self.bitrate_override else info["bitrate"]
             vbr     = min(max(bitrate, 1_000_000), 50_000_000)
-            self.status.emit(f"Source: {w}×{h}  {vbr // 1000} kbps")
+            self.status.emit(f"Source: {src_w}×{src_h}  →  {w}×{h}  {vbr // 1000} kbps")
             self.progress.emit(5)
 
             fg_text = _build_filtergraph(self.segments, self.style, w, h)
+            # Prepend scale filter if resolution changed
+            if self.res_override and self.res_override != (src_w, src_h):
+                fg_text = f"scale={w}:{h}," + fg_text
 
             # Write filter to temp file — avoids Windows 32 k command-line limit
             fd, filter_file = tempfile.mkstemp(suffix=".txt", prefix="cs_filter_")
@@ -446,6 +463,11 @@ class ExportWorker(QObject):
                 ffmpeg, "-y",
                 "-i", self.source_path,
                 "-filter_script:v", filter_file,
+            ]
+            # FPS override
+            if self.fps_override:
+                cmd += ["-r", str(self.fps_override)]
+            cmd += [
                 "-c:v", "libx264",
                 "-b:v", str(vbr),
                 "-maxrate", str(int(vbr * 1.5)),
