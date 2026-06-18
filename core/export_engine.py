@@ -40,7 +40,16 @@ def _cs_bin_dir() -> str:
 
 
 def _ffmpeg_bin() -> str:
-    # Prefer the ffmpeg.exe alias in LOCALAPPDATA/CaptionStudio/bin/
+    # Prefer system ffmpeg on PATH — likely a full build with all codecs (AV1, HEVC, etc.)
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-version"], capture_output=True, creationflags=_NO_WINDOW, timeout=5
+        )
+        if result.returncode == 0:
+            return "ffmpeg"
+    except Exception:
+        pass
+    # Fall back to the ffmpeg.exe alias in LOCALAPPDATA/CaptionStudio/bin/
     bin_dir = _cs_bin_dir()
     alias = os.path.join(bin_dir, "ffmpeg.exe")
     if os.path.isfile(alias):

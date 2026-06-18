@@ -95,6 +95,16 @@ def _ensure_ffmpeg_alias() -> str:
 
 def _ffmpeg_setup_snippet(pkg_dir: str) -> str:
     """Return Python code that ensures ffmpeg is on PATH inside a subprocess."""
+    # If system ffmpeg is available, nothing to do — it's already on PATH
+    # and is likely a full build (supports AV1, HEVC, etc.)
+    try:
+        r = subprocess.run(
+            ["ffmpeg", "-version"], capture_output=True, creationflags=_NO_WINDOW, timeout=5
+        )
+        if r.returncode == 0:
+            return ""  # system ffmpeg already on PATH — no extra setup needed
+    except Exception:
+        pass
     bin_dir = _ensure_ffmpeg_alias()
     if bin_dir:
         # Fast path: ffmpeg.exe alias already exists, just add to PATH
