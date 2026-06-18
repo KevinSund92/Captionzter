@@ -413,6 +413,8 @@ class FirstRunWizard(QDialog):
         sb.setValue(sb.maximum())
 
     def _on_finished(self) -> None:
+        from core.first_run_check import mark_setup_complete
+        mark_setup_complete()
         self._stack.setCurrentIndex(2)
 
     def _on_error(self, msg: str) -> None:
