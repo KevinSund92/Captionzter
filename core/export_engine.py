@@ -18,6 +18,8 @@ import json
 import os
 import re
 import subprocess
+
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
 import tempfile
 import threading
 from typing import List
@@ -467,6 +469,7 @@ class ExportWorker(QObject):
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                creationflags=_NO_WINDOW,
             )
 
             stderr_lines: list = []

@@ -7,7 +7,7 @@
 ;   - Inno Setup 6 installed (https://jrsoftware.org/isinfo.php)
 
 #define AppName      "CaptionStudio"
-#define AppVersion   "1.1.5"
+#define AppVersion   "1.1.6"
 #define AppPublisher "CaptionStudio"
 #define AppURL       "https://github.com/KevinSund92/Captionzter"
 #define AppExeName   "CaptionStudio.exe"
