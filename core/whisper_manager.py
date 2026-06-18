@@ -22,6 +22,7 @@ after the initial model download.
 from __future__ import annotations
 
 import os
+import sys
 import threading
 from pathlib import Path
 from typing import Callable, Optional
@@ -287,8 +288,15 @@ class LanguageDetector(QObject):
             try:
                 import whisper
             except ModuleNotFoundError:
-                self.error.emit("openai-whisper not installed")
-                return
+                from core.first_run_check import packages_dir
+                _pkg = packages_dir()
+                if _pkg not in sys.path:
+                    sys.path.insert(0, _pkg)
+                try:
+                    import whisper  # noqa: F811
+                except ModuleNotFoundError:
+                    self.error.emit("openai-whisper not installed")
+                    return
 
             model = whisper.load_model("tiny", download_root=str(WHISPER_CACHE_DIR))
 
