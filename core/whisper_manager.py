@@ -32,14 +32,14 @@ from PyQt6.QtCore import QObject, pyqtSignal
 # Model cache directory — next to the executable when frozen, project-root
 # when running from source.
 # ---------------------------------------------------------------------------
-_APP_DIR = Path(os.environ.get("CAPTION_STUDIO_APP_DIR", Path(__file__).parent.parent))
-WHISPER_CACHE_DIR = _APP_DIR / "models" / "whisper"
+# Store models in LOCALAPPDATA so it works when app is installed to Program Files
+_LOCAL = os.environ.get("LOCALAPPDATA", "")
+if _LOCAL:
+    WHISPER_CACHE_DIR = Path(_LOCAL) / "CaptionStudio" / "models" / "whisper"
+else:
+    _APP_DIR = Path(os.environ.get("CAPTION_STUDIO_APP_DIR", Path(__file__).parent.parent))
+    WHISPER_CACHE_DIR = _APP_DIR / "models" / "whisper"
 WHISPER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
-# Tell Whisper (and the underlying huggingface hub) where to cache models.
-os.environ["WHISPER_CACHE"] = str(WHISPER_CACHE_DIR)
-# Also point XDG_CACHE_HOME so openai-whisper's torch.hub.load finds it.
-os.environ["XDG_CACHE_HOME"] = str(WHISPER_CACHE_DIR)
 
 # ---------------------------------------------------------------------------
 # Ensure ffmpeg is on PATH so Whisper's load_audio() can find it.

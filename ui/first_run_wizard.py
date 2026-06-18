@@ -233,17 +233,17 @@ class SetupWorker(QThread):
         self.step_progress.emit(3, 0)
 
         pkg_dir   = self._pkg_dir()
-        app_dir   = os.environ.get("CAPTION_STUDIO_APP_DIR", ".")
-        model_dir = os.path.join(app_dir, "models", "whisper")
+        # Store model in LOCALAPPDATA so it works even when app is in Program Files
+        local = os.environ.get("LOCALAPPDATA", os.environ.get("CAPTION_STUDIO_APP_DIR", "."))
+        model_dir = os.path.join(local, "CaptionStudio", "models", "whisper")
 
         # whisper uses tqdm which writes "\rXX%|..." to stderr — capture it
         code = (
             "import sys, os\n"
             f"sys.path.insert(0, {pkg_dir!r})\n"
             f"os.makedirs({model_dir!r}, exist_ok=True)\n"
-            f"os.environ['WHISPER_CACHE'] = {model_dir!r}\n"
             "import whisper\n"
-            "whisper.load_model('small')\n"
+            f"whisper.load_model('small', download_root={model_dir!r})\n"
             "print('MODEL_OK', flush=True)\n"
         )
         python = self._find_python()
