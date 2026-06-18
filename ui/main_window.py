@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
 
 from core.caption_model import CaptionSegment, CaptionStyle, get_caption_blocks
 from core.safe_area_config import PLATFORMS, is_short_form_video
+from core.update_checker import UpdateChecker
 from ui.safe_area_overlay import SafeAreaOverlay
 from core.whisper_manager import (
     AVAILABLE_MODELS, WHISPER_LANGUAGES, WhisperTranscriber,
@@ -38,6 +39,9 @@ from ui.caption_canvas import CaptionCanvas
 from ui.style_panel import StylePanel
 from ui.timeline_widget import TimelineWidget
 
+
+# GitHub repo used for update checks — change to your own "owner/repo"
+_GITHUB_REPO = "KevinSund92/Captionzter"
 
 # ────────────────────────────────────────────────────────────────────────────
 # Drop-zone widget
@@ -466,6 +470,37 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self._status_bar)
         self._status_bar.showMessage("Ready — open a video to begin.")
 
+        # Persistent update-available button (hidden until a newer version is found)
+        self._update_btn = QPushButton("⬆  Update available")
+        self._update_btn.setFlat(True)
+        self._update_btn.setStyleSheet(
+            "QPushButton { color:#5b9cf6; font-size:11px; padding:0 6px; border:none; }"
+            "QPushButton:hover { color:#7ab8ff; text-decoration:underline; }"
+        )
+        self._update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._update_btn.setToolTip("A new version of CaptionStudio is available — click to open download page")
+        self._update_btn.hide()
+        self._status_bar.addPermanentWidget(self._update_btn)
+
+        # Start background update check
+        app_version = "1.0.0"
+        try:
+            from PyQt6.QtWidgets import QApplication
+            v = QApplication.applicationVersion()
+            if v:
+                app_version = v
+        except Exception:
+            pass
+        self._update_checker = UpdateChecker(app_version, _GITHUB_REPO, self)
+        self._update_checker.update_available.connect(self._on_update_available)
+        self._update_checker.start()
+
+    def _on_update_available(self, tag: str, url: str) -> None:
+        self._update_btn.setText(f"⬆  {tag} available")
+        self._update_btn.setToolTip(f"CaptionStudio {tag} is available — click to open download page")
+        self._update_btn.clicked.connect(lambda: __import__("webbrowser").open(url))
+        self._update_btn.show()
+
     # ────────────────────────────────────────────────────────────────────────
     # Video native size → fit scene
     # ────────────────────────────────────────────────────────────────────────
@@ -834,6 +869,9 @@ class MainWindow(QMainWindow):
         self._timeline.set_selected(idx)
         # Switch panel to Selected mode without triggering allToggled→clear_selection loop
         self._style_panel.set_all_mode(False)
+        # Reflect this segment's overrides (animation, alignment) in the panel
+        if 0 <= idx < len(self._segments):
+            self._style_panel.load_segment_state(self._segments[idx])
 
     def _on_all_mode_toggled(self, active: bool) -> None:
         """ALL button toggled in the style panel."""

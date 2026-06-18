@@ -17,10 +17,9 @@ else:
 
 os.environ["CAPTION_STUDIO_APP_DIR"] = APP_DIR
 
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QDialog
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QPalette
-from ui.main_window import MainWindow
 
 
 def _dark_palette() -> QPalette:
@@ -64,6 +63,15 @@ def main() -> None:
     app.setApplicationVersion("1.0.0")
     app.setOrganizationName("CaptionStudio")
 
+    # First-run check — show setup wizard if heavy deps are missing
+    from core.first_run_check import needs_setup
+    if needs_setup():
+        from ui.first_run_wizard import FirstRunWizard
+        wizard = FirstRunWizard()
+        if wizard.exec() != QDialog.DialogCode.Accepted:
+            sys.exit(0)   # user cancelled or setup failed
+
+    from ui.main_window import MainWindow
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

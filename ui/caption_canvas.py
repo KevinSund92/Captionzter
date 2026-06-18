@@ -20,7 +20,7 @@ from __future__ import annotations
 import math
 from typing import List, Optional
 
-from PyQt6.QtCore import Qt, QRectF, QSizeF, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QElapsedTimer, QRectF, QSizeF, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QColor, QFont, QFontDatabase, QFontMetrics,
     QPainter, QPen, QBrush,
@@ -29,10 +29,8 @@ from PyQt6.QtWidgets import QGraphicsObject, QStyleOptionGraphicsItem, QWidget
 
 from core.caption_model import CaptionStyle, WordToken
 
-# Animation durations in seconds
-_ANIM_POP_TOTAL   = 0.30   # 0–0.15 s scale up, 0.15–0.30 s settle
-_ANIM_SLIDE_DUR   = 0.30
-_ANIM_SHAKE_DUR   = 0.50
+# Default animation durations — overridden by CaptionStyle.anim_duration
+_ANIM_DUR_DEFAULT = 0.35
 
 
 class CaptionCanvas(QGraphicsObject):
@@ -53,10 +51,11 @@ class CaptionCanvas(QGraphicsObject):
         self._prog_move:      bool                   = False
         self._anim_type:      str                    = "none"
         self._seg_start:      float                  = 0.0
+        self._anim_elapsed:   QElapsedTimer          = QElapsedTimer()
 
-        # Timer for smooth animation repaints when player is paused/slow
+        # Timer drives repaints at ~60 fps during the animation window
         self._anim_timer = QTimer(self)
-        self._anim_timer.setInterval(16)   # ~60 fps
+        self._anim_timer.setInterval(16)
         self._anim_timer.timeout.connect(self.update)
 
         self._apply_style_pos()
@@ -80,13 +79,12 @@ class CaptionCanvas(QGraphicsObject):
         self.update()
 
     def set_animation(self, anim_type: str, seg_start: float) -> None:
-        """Set the animation type and the segment start time for elapsed calculation."""
-        self._anim_type  = anim_type or "none"
-        self._seg_start  = seg_start
-        # Start fast-repaint timer so animation plays smoothly even when paused
-        anim_dur = {"pop": _ANIM_POP_TOTAL, "slide_in": _ANIM_SLIDE_DUR,
-                    "shake": _ANIM_SHAKE_DUR}.get(self._anim_type, 0)
-        if anim_dur > 0:
+        """Start (or restart) an animation.  Uses a wall-clock QElapsedTimer
+        so interpolation runs at true 60 fps independent of the caption timer."""
+        self._anim_type = anim_type or "none"
+        self._seg_start = seg_start
+        if self._anim_type != "none":
+            self._anim_elapsed.restart()
             self._anim_timer.start()
         else:
             self._anim_timer.stop()
@@ -100,11 +98,10 @@ class CaptionCanvas(QGraphicsObject):
         self._lines        = lines
         self._tokens       = tokens_per_line
         self._current_time = time_s
-        # Stop animation timer once the animation window has passed
+        # Stop timer once past the animation window (wall-clock elapsed)
         if self._anim_timer.isActive():
-            anim_dur = {"pop": _ANIM_POP_TOTAL, "slide_in": _ANIM_SLIDE_DUR,
-                        "shake": _ANIM_SHAKE_DUR}.get(self._anim_type, 0)
-            if time_s - self._seg_start > anim_dur:
+            dur = getattr(self._style, "anim_duration", _ANIM_DUR_DEFAULT)
+            if self._anim_elapsed.elapsed() / 1000.0 > dur:
                 self._anim_timer.stop()
         self.prepareGeometryChange()
         self.update()
@@ -179,37 +176,38 @@ class CaptionCanvas(QGraphicsObject):
         return QRectF(left, -total_h / 2 - pad - 18, rect_w, total_h + pad * 2 + 18)
 
     def _apply_anim(self, painter: QPainter, total_h: float) -> None:
-        """Push an animation transform onto the painter for the current elapsed time."""
-        elapsed = max(0.0, self._current_time - self._seg_start)
-        anim    = self._anim_type
+        """Apply animation transform using wall-clock elapsed time for true 60 fps."""
+        anim      = self._anim_type
+        if anim == "none":
+            return
+        elapsed   = self._anim_elapsed.elapsed() / 1000.0   # wall-clock seconds
+        dur       = max(0.05, getattr(self._style, "anim_duration",  _ANIM_DUR_DEFAULT))
+        intensity = max(0.0,  getattr(self._style, "anim_intensity", 1.0))
+
+        if elapsed >= dur:
+            return   # animation finished — paint normally
+
+        progress = elapsed / dur   # 0.0 → 1.0
 
         if anim == "pop":
-            if elapsed >= _ANIM_POP_TOTAL:
-                return
-            half = _ANIM_POP_TOTAL / 2
-            if elapsed < half:
-                s = elapsed / half * 1.1          # 0 → 1.1
+            # scale 0 → (1 + overshoot) → 1.0, two equal halves
+            overshoot = 1.0 + 0.15 * intensity   # intensity=1 → peak 1.15
+            if progress < 0.5:
+                s = progress * 2 * overshoot
             else:
-                s = 1.1 - (elapsed - half) / half * 0.1  # 1.1 → 1.0
-            painter.translate(0, 0)
+                s = overshoot - (progress * 2 - 1) * (overshoot - 1.0)
             painter.scale(s, s)
 
         elif anim == "slide_in":
-            if elapsed >= _ANIM_SLIDE_DUR:
-                return
-            progress = elapsed / _ANIM_SLIDE_DUR
-            # ease-out: fast start, slows down
-            ease     = 1.0 - (1.0 - progress) ** 2
-            offset_y = (1.0 - ease) * (total_h + 20)
-            painter.translate(0, offset_y)
+            ease     = 1.0 - (1.0 - progress) ** 3   # cubic ease-out
+            distance = (total_h + 40) * intensity
+            painter.translate(0, (1.0 - ease) * distance)
 
         elif anim == "shake":
-            if elapsed >= _ANIM_SHAKE_DUR:
-                return
-            # decaying sine wave
-            decay  = math.exp(-elapsed * 9)
-            offset_x = math.sin(elapsed * 55) * 12 * decay
-            painter.translate(offset_x, 0)
+            decay    = math.exp(-progress * 6)
+            freq     = 50 + 20 * intensity           # higher intensity = faster shake
+            amp      = 14 * intensity
+            painter.translate(math.sin(elapsed * freq) * amp * decay, 0)
 
     def paint(self, painter: QPainter,
               option: QStyleOptionGraphicsItem,

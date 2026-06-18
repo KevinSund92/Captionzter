@@ -32,7 +32,9 @@ class CaptionSegment:
     words:      List[WordToken]              = field(default_factory=list)
     position:   Optional[Tuple[float,float]] = None   # (nx, ny) override; None = use style
     text_align: Optional[str]               = None   # "left"|"center"|"right"; None = use style
-    animation:  Optional[str]               = None   # "none"|"pop"|"slide_in"|"shake"; None = use style
+    animation:       Optional[str]   = None   # "none"|"pop"|"slide_in"|"shake"; None = use style
+    anim_duration:   Optional[float] = None   # seconds; None = use style
+    anim_intensity:  Optional[float] = None   # 0.0-3.0 multiplier; None = use style
 
     @classmethod
     def from_whisper_dict(cls, d: dict) -> "CaptionSegment":
@@ -56,7 +58,9 @@ class CaptionStyle:
     bold:           bool          = True
     letter_spacing: int           = 0    # extra pixels between characters
     word_spacing:   int           = 0    # extra pixels between words
-    animation:      str           = "none"  # "none"|"pop"|"slide_in"|"shake"
+    animation:      str           = "none"   # "none"|"pop"|"slide_in"|"shake"
+    anim_duration:  float         = 0.35    # seconds
+    anim_intensity: float         = 1.0     # multiplier (1.0 = default strength)
 
     def to_dict(self) -> dict:
         return self.__dict__.copy()

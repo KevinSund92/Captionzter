@@ -325,16 +325,19 @@ class StylePanel(QWidget):
 
     def _build_animation_box(self) -> QGroupBox:
         box = QGroupBox("Animation")
-        g   = QGridLayout(box)
-        g.setSpacing(4)
+        v   = QVBoxLayout(box)
+        v.setSpacing(6)
 
+        # Type buttons — 2×2 grid
+        g = QGridLayout()
+        g.setSpacing(4)
         self._anim_group = QButtonGroup(self)
         self._anim_btns  = {}
         entries = [
             ("None",     "none",     "No animation"),
-            ("Pop-in",   "pop",      "Scale 0%→110%→100% on entry"),
-            ("Slide In", "slide_in", "Slides up into position on entry"),
-            ("Shake",    "shake",    "Brief horizontal shake on entry"),
+            ("Pop-in",   "pop",      "Scale up then settle on entry"),
+            ("Slide In", "slide_in", "Slide up into position on entry"),
+            ("Shake",    "shake",    "Decaying horizontal shake on entry"),
         ]
         for i, (lbl, val, tip) in enumerate(entries):
             btn = QPushButton(lbl)
@@ -346,6 +349,43 @@ class StylePanel(QWidget):
             g.addWidget(btn, i // 2, i % 2)
         self._anim_btns["none"].setChecked(True)
         self._anim_group.buttonClicked.connect(self._on_anim_clicked)
+        v.addLayout(g)
+
+        # Duration + Intensity row
+        params = QGridLayout()
+        params.setSpacing(6)
+        params.setColumnStretch(0, 1)
+        params.setColumnStretch(1, 0)
+        params.setColumnStretch(2, 1)
+        params.setColumnStretch(3, 0)
+
+        params.addWidget(_label("Duration"), 0, 0)
+        self._anim_dur_spin = QSpinBox()
+        self._anim_dur_spin.setRange(50, 3000)
+        self._anim_dur_spin.setSingleStep(50)
+        self._anim_dur_spin.setValue(350)
+        self._anim_dur_spin.setSuffix(" ms")
+        self._anim_dur_spin.setFixedWidth(80)
+        self._anim_dur_spin.setToolTip("How long the animation plays (milliseconds)")
+        self._anim_dur_spin.valueChanged.connect(self._emit)
+        params.addWidget(self._anim_dur_spin, 0, 1)
+
+        params.addWidget(_label("Intensity"), 0, 2)
+        self._anim_int_spin = QSpinBox()
+        self._anim_int_spin.setRange(10, 300)
+        self._anim_int_spin.setSingleStep(10)
+        self._anim_int_spin.setValue(100)
+        self._anim_int_spin.setSuffix(" %")
+        self._anim_int_spin.setFixedWidth(72)
+        self._anim_int_spin.setToolTip(
+            "Pop-in: overshoot amount\n"
+            "Slide In: slide distance\n"
+            "Shake: amplitude & speed"
+        )
+        self._anim_int_spin.valueChanged.connect(self._emit)
+        params.addWidget(self._anim_int_spin, 0, 3)
+
+        v.addLayout(params)
         return box
 
     # ── Karaoke group ─────────────────────────────────────────────────────
@@ -445,6 +485,8 @@ class StylePanel(QWidget):
         self._style.letter_spacing = self._letter_sp_spin.value()
         self._style.word_spacing   = self._word_sp_spin.value()
         self._style.animation      = self._current_anim()
+        self._style.anim_duration  = self._anim_dur_spin.value() / 1000.0
+        self._style.anim_intensity = self._anim_int_spin.value() / 100.0
         self.styleChanged.emit(self._style)
 
     # ── Public ────────────────────────────────────────────────────────────
@@ -462,3 +504,35 @@ class StylePanel(QWidget):
 
     def apply_position(self, nx: float, ny: float) -> None:
         self._style.position = (nx, ny)
+
+    def load_segment_state(self, seg) -> None:
+        """Reflect a segment's per-segment overrides in the panel without emitting signals.
+        Call after switching to Selected mode so the UI shows what is active for that segment."""
+        # Determine effective animation for this segment
+        anim = seg.animation if seg.animation is not None else self._style.animation
+        dur_ms = round((seg.anim_duration  if seg.anim_duration  is not None
+                        else self._style.anim_duration) * 1000)
+        int_pct = round((seg.anim_intensity if seg.anim_intensity is not None
+                         else self._style.anim_intensity) * 100)
+
+        self._anim_group.blockSignals(True)
+        btn = self._anim_btns.get(anim or "none")
+        if btn:
+            btn.setChecked(True)
+        self._anim_group.blockSignals(False)
+
+        self._anim_dur_spin.blockSignals(True)
+        self._anim_dur_spin.setValue(max(50, min(3000, dur_ms)))
+        self._anim_dur_spin.blockSignals(False)
+
+        self._anim_int_spin.blockSignals(True)
+        self._anim_int_spin.setValue(max(10, min(300, int_pct)))
+        self._anim_int_spin.blockSignals(False)
+
+        # Also reflect alignment override
+        align = seg.text_align if seg.text_align is not None else self._style.text_align
+        self._align_group.blockSignals(True)
+        ab = self._align_btns.get(align or "center")
+        if ab:
+            ab.setChecked(True)
+        self._align_group.blockSignals(False)

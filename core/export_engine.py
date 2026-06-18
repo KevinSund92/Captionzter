@@ -231,7 +231,9 @@ def _build_filtergraph(segments: List[CaptionSegment], style: CaptionStyle,
     # lines than rows_visible, but its top stays at the same pixel).
     max_lines = max(1, style.rows_visible)
 
-    style_anim    = getattr(style, "animation", "none") or "none"
+    style_anim      = getattr(style, "animation",      "none") or "none"
+    style_anim_dur  = max(0.05, getattr(style, "anim_duration",  0.35))
+    style_anim_int  = max(0.0,  getattr(style, "anim_intensity", 1.0))
 
     def _line_width(text: str) -> float:
         """Measure a full line including letter/word spacing."""
@@ -246,31 +248,29 @@ def _build_filtergraph(segments: List[CaptionSegment], style: CaptionStyle,
         total = sum(_text_width(font, ch, size) + letter_sp for ch in text)
         return max(0.0, total - letter_sp)
 
-    def _anim_x_expr(base_x: int, b_start: float, anim: str) -> str:
-        """Return an ffmpeg x-expression including any animation offset."""
-        tr = f"(t-{b_start:.3f})"          # time relative to block start
+    def _anim_x_expr(base_x: int, b_start: float, anim: str, dur: float, intensity: float) -> str:
+        tr = f"(t-{b_start:.3f})"
         if anim == "shake":
-            # Decaying sine: amplitude 12px, freq 55 rad/s, decay 9/s — matches preview
-            shake = f"if(lt({tr},0.5),sin({tr}*55)*12*exp(-{tr}*9),0)"
+            freq = round(50 + 20 * intensity)
+            amp  = round(14 * intensity)
+            shake = f"if(lt({tr},{dur:.3f}),sin({tr}*{freq})*{amp}*exp(-{tr}*6/{dur:.3f}),0)"
             return f"{base_x}+{shake}"
         return str(base_x)
 
-    def _anim_y_expr(base_y: str, b_start: float, anim: str, total_line_h: float) -> str:
-        """Return an ffmpeg y-expression including any animation offset."""
+    def _anim_y_expr(base_y: str, b_start: float, anim: str, total_line_h: float,
+                     dur: float, intensity: float) -> str:
         tr = f"(t-{b_start:.3f})"
         if anim == "slide_in":
-            # ease-out over 0.3 s: offset starts at total_line_h+20 and goes to 0
-            slide_px = round(total_line_h + 20)
-            offset = f"if(lt({tr},0.3),pow(1-{tr}/0.3,2)*{slide_px},0)"
+            slide_px = round((total_line_h + 40) * intensity)
+            offset = f"if(lt({tr},{dur:.3f}),pow(1-{tr}/{dur:.3f},3)*{slide_px},0)"
             return f"{base_y}+{offset}"
         return base_y
 
-    def _anim_alpha_expr(b_start: float, anim: str) -> str:
-        """Return an ffmpeg alpha expression, or '1' for no animation."""
+    def _anim_alpha_expr(b_start: float, anim: str, dur: float, intensity: float) -> str:
         tr = f"(t-{b_start:.3f})"
         if anim == "pop":
-            # Fast fade-in over 0.15 s to approximate pop; scale not possible in drawtext
-            return f"if(lt({tr},0.15),{tr}/0.15,1)"
+            fade = min(dur * 0.5, 0.15 / max(0.1, intensity))
+            return f"if(lt({tr},{fade:.3f}),{tr}/{fade:.3f},1)"
         return "1"
 
     def _emit_drawtext(text: str, color: str, x_expr: str, y_expr: str,
@@ -290,12 +290,13 @@ def _build_filtergraph(segments: List[CaptionSegment], style: CaptionStyle,
                    x_start: int, baseline: int,
                    block_t0: float, block_t1: float,
                    word_t0: float, word_t1: float,
-                   anim: str, total_h: float) -> None:
-        alpha = _anim_alpha_expr(block_t0, anim)
+                   anim: str, total_h: float,
+                   dur: float, intensity: float) -> None:
+        alpha = _anim_alpha_expr(block_t0, anim, dur, intensity)
 
         if lsp == 0:
-            xe  = _anim_x_expr(x_start, block_t0, anim)
-            ye  = _anim_y_expr(f"{baseline}-ascent", block_t0, anim, total_h)
+            xe  = _anim_x_expr(x_start, block_t0, anim, dur, intensity)
+            ye  = _anim_y_expr(f"{baseline}-ascent", block_t0, anim, total_h, dur, intensity)
             _emit_drawtext(word, fg_color, xe, ye, alpha, block_t0, block_t1)
             if hl_color:
                 _emit_drawtext(word, hl_color, xe, ye, "1", word_t0, word_t1)
@@ -303,8 +304,8 @@ def _build_filtergraph(segments: List[CaptionSegment], style: CaptionStyle,
             cx = x_start
             for ch in word:
                 ch_w = round(_text_width(pil_font, ch, fontsize_px))
-                xe   = _anim_x_expr(cx, block_t0, anim)
-                ye   = _anim_y_expr(f"{baseline}-ascent", block_t0, anim, total_h)
+                xe   = _anim_x_expr(cx, block_t0, anim, dur, intensity)
+                ye   = _anim_y_expr(f"{baseline}-ascent", block_t0, anim, total_h, dur, intensity)
                 _emit_drawtext(ch, fg_color, xe, ye, alpha, block_t0, block_t1)
                 if hl_color:
                     _emit_drawtext(ch, hl_color, xe, ye, "1", word_t0, word_t1)
@@ -315,6 +316,8 @@ def _build_filtergraph(segments: List[CaptionSegment], style: CaptionStyle,
         cx, cy = seg.position   if seg.position   else style.position
         s_align = seg.text_align if seg.text_align else getattr(style, "text_align", "center")
         seg_anim = (seg.animation if seg.animation is not None else style_anim) or "none"
+        seg_dur  = seg.anim_duration  if seg.anim_duration  is not None else style_anim_dur
+        seg_int  = seg.anim_intensity if seg.anim_intensity is not None else style_anim_int
 
         fixed_block_top = round((video_h - max_lines * line_h) * cy)
 
@@ -360,7 +363,7 @@ def _build_filtergraph(segments: List[CaptionSegment], style: CaptionStyle,
                         for w_idx, word in enumerate(words):
                             _emit_word(word, fg, None, round(x), baseline_px,
                                        b_start, b_end, b_start, b_end,
-                                       seg_anim, total_block_h)
+                                       seg_anim, total_block_h, seg_dur, seg_int)
                             x += _text_width_lsp(pil_font, word, fontsize_px, lsp)
                             if w_idx < len(words) - 1:
                                 x += _text_width(pil_font, " ", fontsize_px) + wsp
@@ -386,7 +389,7 @@ def _build_filtergraph(segments: List[CaptionSegment], style: CaptionStyle,
                                  if t_idx < len(line_tokens) - 1 else 0
                         _emit_word(word, fg, hl, round(x), baseline_px,
                                    b_start, b_end, token.start, token.end,
-                                   seg_anim, total_block_h)
+                                   seg_anim, total_block_h, seg_dur, seg_int)
                         x += word_w + gap
 
     return ",".join(parts) if parts else "null"
