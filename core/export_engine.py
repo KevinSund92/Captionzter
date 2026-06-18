@@ -476,6 +476,7 @@ class ExportWorker(QObject):
             ffmpeg = _ffmpeg_bin()
             cmd = [
                 ffmpeg, "-y",
+                "-err_detect", "ignore_err",  # tolerate AV1/HEVC decode errors
                 "-i", self.source_path,
                 "-filter_script:v", filter_file,
             ]
