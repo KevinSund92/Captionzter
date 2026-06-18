@@ -2,15 +2,28 @@
 ui/first_run_wizard.py
 ----------------------
 First-run setup wizard shown when heavy dependencies (torch, whisper, ffmpeg)
-are not yet installed. Downloads and installs everything in the background
-using the bundled Python executable so pip targets the right environment.
+are not yet installed.
+
+Install strategy
+----------------
+PyInstaller freezes the app into a standalone exe — sys.executable IS that exe,
+not Python, so "sys.executable -m pip" does nothing useful.
+
+Instead we:
+  1. Find a real Python interpreter via the Windows 'py' launcher or PATH.
+  2. Install all packages with --target=<APP_DIR>/packages/ so they land in a
+     known location outside the frozen bundle.
+  3. main.py inserts that directory into sys.path at startup so torch/whisper
+     are importable in every subsequent launch.
 """
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 import sys
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
@@ -84,17 +97,20 @@ class SetupWorker(QThread):
         self.step_progress.emit(2, 0)
         self.log_line.emit("Downloading whisper small model…")
 
-        # Run in a subprocess so tqdm output is captured
+        pkg_dir  = self._pkg_dir()
+        app_dir  = os.environ.get("CAPTION_STUDIO_APP_DIR", ".")
+        model_dir = os.path.join(app_dir, "models", "whisper")
         code = (
-            "import os, sys\n"
-            "app_dir = os.environ.get('CAPTION_STUDIO_APP_DIR', '.')\n"
-            "os.environ['WHISPER_CACHE'] = os.path.join(app_dir, 'models', 'whisper')\n"
+            f"import sys; sys.path.insert(0, {pkg_dir!r})\n"
+            f"import os; os.makedirs({model_dir!r}, exist_ok=True)\n"
+            f"os.environ['WHISPER_CACHE'] = {model_dir!r}\n"
             "import whisper\n"
             "whisper.load_model('small')\n"
             "print('MODEL_OK')\n"
         )
+        python = self._find_python()
         result = subprocess.run(
-            [sys.executable, "-c", code],
+            [python, "-c", code],
             capture_output=True, text=True, env=self._env(),
         )
         for line in (result.stdout + result.stderr).splitlines():
@@ -110,13 +126,16 @@ class SetupWorker(QThread):
         self.step_progress.emit(3, 0)
         self.log_line.emit("Locating ffmpeg binary…")
 
+        pkg_dir = self._pkg_dir()
         code = (
+            f"import sys; sys.path.insert(0, {pkg_dir!r})\n"
             "import imageio_ffmpeg\n"
             "p = imageio_ffmpeg.get_ffmpeg_exe()\n"
             "print('FFMPEG_OK:', p)\n"
         )
+        python = self._find_python()
         result = subprocess.run(
-            [sys.executable, "-c", code],
+            [python, "-c", code],
             capture_output=True, text=True, env=self._env(),
         )
         for line in (result.stdout + result.stderr).splitlines():
@@ -129,8 +148,52 @@ class SetupWorker(QThread):
 
     # ── Helpers ───────────────────────────────────────────────────────────
 
+    def _pkg_dir(self) -> str:
+        """Directory where packages are installed (next to the exe)."""
+        app_dir = os.environ.get("CAPTION_STUDIO_APP_DIR",
+                                 os.path.dirname(os.path.abspath(__file__)))
+        d = os.path.join(app_dir, "packages")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _find_python(self) -> str:
+        """Find a real Python interpreter — NOT the frozen exe."""
+        # 1. Windows 'py' launcher (installed alongside any Python on Windows)
+        py = shutil.which("py")
+        if py:
+            self.log_line.emit(f"Using Python launcher: {py}")
+            return py
+        # 2. python3 / python on PATH
+        for name in ("python3", "python"):
+            p = shutil.which(name)
+            if p and p != sys.executable:
+                self.log_line.emit(f"Using Python: {p}")
+                return p
+        # 3. Common Windows install locations
+        for base in (
+            os.path.expanduser("~\\AppData\\Local\\Programs\\Python"),
+            "C:\\Python311", "C:\\Python310", "C:\\Python312", "C:\\Python313", "C:\\Python314",
+        ):
+            for sub in os.listdir(base) if os.path.isdir(base) else []:
+                candidate = os.path.join(base, sub, "python.exe")
+                if os.path.isfile(candidate):
+                    self.log_line.emit(f"Found Python: {candidate}")
+                    return candidate
+        raise RuntimeError(
+            "Python 3.10+ not found on this machine.\n"
+            "Please install Python from https://python.org and try again."
+        )
+
     def _run_pip(self, args: list, step: int) -> None:
-        cmd = [sys.executable, "-m", "pip"] + args
+        python  = self._find_python()
+        target  = self._pkg_dir()
+        # Use 'py -3' syntax if it's the py launcher
+        if os.path.basename(python).lower() == "py.exe":
+            base_cmd = [python, "-3", "-m", "pip"]
+        else:
+            base_cmd = [python, "-m", "pip"]
+        cmd = base_cmd + args + ["--target", target]
+        self.log_line.emit(f"Running: {' '.join(cmd)}")
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, env=self._env(),
@@ -140,7 +203,6 @@ class SetupWorker(QThread):
             line = line.rstrip()
             self.log_line.emit(line)
             lines_seen += 1
-            # Rough progress — pip doesn't give percentages, so we pulse
             self.step_progress.emit(step, min(95, lines_seen * 3))
         proc.wait()
         if proc.returncode != 0:
@@ -148,7 +210,6 @@ class SetupWorker(QThread):
         self.step_progress.emit(step, 100)
 
     def _env(self) -> dict:
-        import os
         return os.environ.copy()
 
 

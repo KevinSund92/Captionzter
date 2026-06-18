@@ -17,6 +17,13 @@ else:
 
 os.environ["CAPTION_STUDIO_APP_DIR"] = APP_DIR
 
+# Add app-local packages dir to sys.path so torch/whisper (installed by the
+# first-run wizard into <APP_DIR>/packages/) are importable in the frozen app.
+if getattr(sys, "frozen", False):
+    _pkg_dir = os.path.join(APP_DIR, "packages")
+    if os.path.isdir(_pkg_dir) and _pkg_dir not in sys.path:
+        sys.path.insert(0, _pkg_dir)
+
 from PyQt6.QtWidgets import QApplication, QDialog
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QPalette
