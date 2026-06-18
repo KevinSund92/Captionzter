@@ -77,7 +77,14 @@ def _python_from_registry() -> List[str]:
     return results
 
 
+# Python 3.11 embeddable — small (~9 MB), no system Python required
+_PYTHON_EMBED_URL = (
+    "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip"
+)
+_GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
+
 _STEPS: List[Tuple[str, int]] = [
+    ("Python runtime",         1),   # ~9 MB embed zip + pip bootstrap
     ("PyTorch (AI engine)",    4),   # largest download
     ("Whisper (speech AI)",    2),
     ("Whisper model weights",  3),   # ~244 MB model download
@@ -107,6 +114,8 @@ class SetupWorker(QThread):
 
     def run(self) -> None:
         try:
+            self._setup_python()
+            self._check_cancelled()
             self._install_torch()
             self._check_cancelled()
             self._install_whisper_deps()
@@ -116,24 +125,96 @@ class SetupWorker(QThread):
             self._ensure_ffmpeg()
             self.finished.emit()
         except _CancelledError:
-            pass   # silently stop — wizard handles UI reset
+            pass
         except Exception as exc:
             self.error.emit(str(exc))
 
     # ── Individual steps ──────────────────────────────────────────────────
 
+    def _setup_python(self) -> None:
+        """Download Python embeddable + bootstrap pip if no system Python found."""
+        self.step_started.emit(0, "Setting up Python runtime…")
+
+        # If system Python already exists, skip
+        existing = self._find_python(silent=True)
+        if existing:
+            self.log_line.emit(f"System Python found: {existing} — skipping embed")
+            self.step_progress.emit(0, 100)
+            return
+
+        import urllib.request, zipfile, io
+        app_dir  = os.environ.get("CAPTION_STUDIO_APP_DIR", ".")
+        py_dir   = os.path.join(app_dir, "python")
+        py_exe   = os.path.join(py_dir, "python.exe")
+        os.makedirs(py_dir, exist_ok=True)
+
+        if not os.path.isfile(py_exe):
+            # Download embeddable zip
+            self.log_line.emit(f"Downloading Python runtime from {_PYTHON_EMBED_URL}")
+            self.step_progress.emit(0, 5)
+
+            def _dl_progress(block, bsize, total):
+                if total > 0:
+                    pct = min(50, int(block * bsize / total * 50))
+                    self.step_progress.emit(0, pct)
+
+            zip_path = os.path.join(py_dir, "embed.zip")
+            urllib.request.urlretrieve(_PYTHON_EMBED_URL, zip_path, _dl_progress)
+            self.log_line.emit("Extracting Python runtime…")
+            self.step_progress.emit(0, 55)
+            with zipfile.ZipFile(zip_path, "r") as z:
+                z.extractall(py_dir)
+            os.remove(zip_path)
+
+            # Enable site-packages so pip-installed packages are importable
+            for pth_file in os.listdir(py_dir):
+                if pth_file.endswith("._pth"):
+                    full = os.path.join(py_dir, pth_file)
+                    with open(full, "r") as f:
+                        content = f.read()
+                    content = content.replace("#import site", "import site")
+                    with open(full, "w") as f:
+                        f.write(content)
+                    break
+
+        self.step_progress.emit(0, 60)
+
+        # Bootstrap pip if missing
+        pip_ok = subprocess.run(
+            [py_exe, "-m", "pip", "--version"],
+            capture_output=True,
+        ).returncode == 0
+
+        if not pip_ok:
+            self.log_line.emit("Bootstrapping pip…")
+            import urllib.request
+            get_pip = os.path.join(py_dir, "get-pip.py")
+            urllib.request.urlretrieve(_GET_PIP_URL, get_pip)
+            self.step_progress.emit(0, 75)
+            r = subprocess.run(
+                [py_exe, get_pip],
+                capture_output=True, text=True,
+            )
+            self.log_line.emit(r.stdout[-500:] if r.stdout else "")
+            if r.returncode != 0:
+                raise RuntimeError(f"pip bootstrap failed:\n{r.stderr}")
+            os.remove(get_pip)
+
+        self.log_line.emit("Python runtime ready.")
+        self.step_progress.emit(0, 100)
+
     def _install_torch(self) -> None:
-        self.step_started.emit(0, "Downloading PyTorch (~200 MB)…")
+        self.step_started.emit(1, "Downloading PyTorch (~200 MB)…")
         self._run_pip(
             [
                 "install", "torch", "torchvision", "torchaudio",
                 "--index-url", "https://download.pytorch.org/whl/cpu",
             ],
-            step=0,
+            step=1,
         )
 
     def _install_whisper_deps(self) -> None:
-        self.step_started.emit(1, "Downloading Whisper and video tools…")
+        self.step_started.emit(2, "Downloading Whisper and video tools…")
         self._run_pip(
             [
                 "install",
@@ -144,12 +225,12 @@ class SetupWorker(QThread):
                 "Pillow>=10.0.0",
                 "numpy>=1.24.0",
             ],
-            step=1,
+            step=2,
         )
 
     def _download_whisper_model(self) -> None:
-        self.step_started.emit(2, "Downloading Whisper model (~244 MB)…")
-        self.step_progress.emit(2, 0)
+        self.step_started.emit(3, "Downloading Whisper model (~244 MB)…")
+        self.step_progress.emit(3, 0)
 
         pkg_dir   = self._pkg_dir()
         app_dir   = os.environ.get("CAPTION_STUDIO_APP_DIR", ".")
@@ -192,7 +273,7 @@ class SetupWorker(QThread):
                     # tqdm format: "  X%|█..."  or "100%|..."
                     pct = _parse_tqdm_pct(line)
                     if pct is not None:
-                        self.step_progress.emit(2, pct)
+                        self.step_progress.emit(3, pct)
                 else:
                     buf += ch
 
@@ -211,11 +292,11 @@ class SetupWorker(QThread):
             raise RuntimeError(
                 "Whisper model download failed. Check your internet connection."
             )
-        self.step_progress.emit(2, 100)
+        self.step_progress.emit(3, 100)
 
     def _ensure_ffmpeg(self) -> None:
-        self.step_started.emit(3, "Setting up ffmpeg…")
-        self.step_progress.emit(3, 0)
+        self.step_started.emit(4, "Setting up ffmpeg…")
+        self.step_progress.emit(4, 0)
         self.log_line.emit("Downloading ffmpeg binary…")
 
         pkg_dir = self._pkg_dir()
@@ -244,7 +325,7 @@ class SetupWorker(QThread):
             raise _CancelledError()
         if proc.returncode != 0:
             raise RuntimeError("ffmpeg setup failed:\n" + "\n".join(out_lines))
-        self.step_progress.emit(3, 100)
+        self.step_progress.emit(4, 100)
 
     # ── Helpers ───────────────────────────────────────────────────────────
 
@@ -259,9 +340,15 @@ class SetupWorker(QThread):
         os.makedirs(d, exist_ok=True)
         return d
 
-    def _find_python(self) -> str:
-        """Find a real Python 3 interpreter on this machine."""
+    def _find_python(self, silent: bool = False) -> Optional[str]:
+        """Find a real Python 3 interpreter. Returns None if silent=True and not found."""
         candidates = []
+
+        # 0. Our own bundled embeddable Python (installed by _setup_python)
+        app_dir = os.environ.get("CAPTION_STUDIO_APP_DIR", ".")
+        embed_py = os.path.join(app_dir, "python", "python.exe")
+        if os.path.isfile(embed_py):
+            candidates.append(embed_py)
 
         # 1. Windows registry — most reliable, works even without PATH
         candidates += _python_from_registry()
@@ -300,7 +387,8 @@ class SetupWorker(QThread):
             if p and os.path.isfile(p) and p != sys.executable:
                 candidates.append(p)
 
-        self.log_line.emit(f"Python candidates: {candidates}")
+        if not silent:
+            self.log_line.emit(f"Python candidates: {candidates}")
 
         # Verify each candidate actually runs Python 3
         for p in candidates:
@@ -309,11 +397,15 @@ class SetupWorker(QThread):
                                    capture_output=True, text=True, timeout=5)
                 ver = (r.stdout + r.stderr).strip()
                 if r.returncode == 0 and "Python 3" in ver:
-                    self.log_line.emit(f"Using: {p}  ({ver})")
+                    if not silent:
+                        self.log_line.emit(f"Using: {p}  ({ver})")
                     return p
             except Exception as e:
-                self.log_line.emit(f"  skipped {p}: {e}")
+                if not silent:
+                    self.log_line.emit(f"  skipped {p}: {e}")
 
+        if silent:
+            return None
         raise RuntimeError(
             "Python 3.10+ not found on this machine.\n"
             "Please install Python from https://python.org then run the app again."
