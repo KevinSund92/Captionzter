@@ -483,7 +483,7 @@ class MainWindow(QMainWindow):
         self._status_bar.addPermanentWidget(self._update_btn)
 
         # Start background update check
-        app_version = "1.1.6"
+        app_version = "1.1.7"
         try:
             from PyQt6.QtWidgets import QApplication
             v = QApplication.applicationVersion()
@@ -495,11 +495,16 @@ class MainWindow(QMainWindow):
         self._update_checker.update_available.connect(self._on_update_available)
         self._update_checker.start()
 
-    def _on_update_available(self, tag: str, url: str) -> None:
+    def _on_update_available(self, tag: str, url: str, download_url: str) -> None:
         self._update_btn.setText(f"⬆  {tag} available")
-        self._update_btn.setToolTip(f"CaptionStudio {tag} is available — click to open download page")
-        self._update_btn.clicked.connect(lambda: __import__("webbrowser").open(url))
+        self._update_btn.setToolTip(f"CaptionStudio {tag} is available — click to update")
+        self._update_btn.clicked.connect(lambda: self._show_update_dialog(tag, url, download_url))
         self._update_btn.show()
+
+    def _show_update_dialog(self, tag: str, url: str, download_url: str) -> None:
+        from ui.update_dialog import UpdateDialog
+        dlg = UpdateDialog(tag, url, download_url, self)
+        dlg.exec()
 
     # ────────────────────────────────────────────────────────────────────────
     # Video native size → fit scene

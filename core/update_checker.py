@@ -35,7 +35,7 @@ class UpdateChecker(QThread):
             version exists.  Never fired on network error (silently ignored).
     """
 
-    update_available = pyqtSignal(str, str)   # (tag, html_url)
+    update_available = pyqtSignal(str, str, str)   # (tag, html_url, download_url)
 
     def __init__(self, current_version: str, repo: str, parent=None) -> None:
         """
@@ -62,8 +62,16 @@ class UpdateChecker(QThread):
             if not tag:
                 return
 
+            # Find the .exe asset download URL
+            download_url = ""
+            for asset in data.get("assets", []):
+                name = asset.get("name", "")
+                if name.endswith(".exe"):
+                    download_url = asset.get("browser_download_url", "")
+                    break
+
             if _parse_version(tag) > _parse_version(self._current):
-                self.update_available.emit(tag, html_url)
+                self.update_available.emit(tag, html_url, download_url)
 
         except Exception:
             pass   # network down, rate-limited, private repo — silently ignore
