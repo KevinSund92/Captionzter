@@ -17,10 +17,11 @@ else:
 
 os.environ["CAPTION_STUDIO_APP_DIR"] = APP_DIR
 
-# Add app-local packages dir to sys.path so torch/whisper (installed by the
-# first-run wizard into <APP_DIR>/packages/) are importable in both frozen
-# and dev-mode runs.
-_pkg_dir = os.path.join(APP_DIR, "packages")
+# Add user-data packages dir to sys.path so torch/whisper (installed by the
+# first-run wizard into %LOCALAPPDATA%\CaptionStudio\packages\) are importable.
+# LOCALAPPDATA is always user-writable, even when the app is in Program Files.
+from core.first_run_check import packages_dir as _packages_dir
+_pkg_dir = _packages_dir()
 if os.path.isdir(_pkg_dir) and _pkg_dir not in sys.path:
     sys.path.insert(0, _pkg_dir)
 
@@ -67,7 +68,7 @@ def main() -> None:
     app.setStyle("Fusion")
     app.setPalette(_dark_palette())   # dark palette → Fusion renders native widgets correctly
     app.setApplicationName("CaptionStudio")
-    app.setApplicationVersion("1.0.8")
+    app.setApplicationVersion("1.0.9")
     app.setOrganizationName("CaptionStudio")
 
     # First-run check — show setup wizard if heavy deps are missing

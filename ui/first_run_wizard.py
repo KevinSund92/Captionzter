@@ -334,9 +334,8 @@ class SetupWorker(QThread):
             raise _CancelledError()
 
     def _pkg_dir(self) -> str:
-        app_dir = os.environ.get("CAPTION_STUDIO_APP_DIR",
-                                 os.path.dirname(os.path.abspath(__file__)))
-        d = os.path.join(app_dir, "packages")
+        from core.first_run_check import packages_dir
+        d = packages_dir()
         os.makedirs(d, exist_ok=True)
         return d
 
